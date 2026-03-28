@@ -28,19 +28,6 @@ final class OpenAILive: Sendable {
     }
     
     @Sendable
-    func models() -> [ProviderModel] {
-        [
-            "gpt-5.4",
-            "gpt-5.2",
-            "gpt-5-mini",
-            "gpt-5-nano",
-            "gpt-4.1",
-            "gpt-4.1-mini"
-        ]
-        .map(ProviderModel.init)
-    }
-    
-    @Sendable
     func chat(_ model: String, _ prompt: String) async throws -> String {
         @Shared(.openAIAPIKey) var apiKeyShared: String = ""
         @Shared(.openAIHost) var hostShared

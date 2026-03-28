@@ -8,6 +8,7 @@
 import Dependencies
 import DependenciesMacros
 import CodexKit
+import Networking
 
 @DependencyClient
 public struct ModelProviderService: Sendable {
@@ -29,6 +30,7 @@ extension ModelProviderService: DependencyKey {
         let openAIClient = OpenAILive()
         let codexClient = CodexLive()
         let geminiClient = GeminiLive()
+        let providerModelsRemoteService = ProviderModelsRemoteService()
         
         return .init { provider, apiKey, host in
             switch provider {
@@ -46,11 +48,11 @@ extension ModelProviderService: DependencyKey {
                 case .ollama:
                     return try await ollamaClient.models()
                 case .openai:
-                    return openAIClient.models()
+                    return try await providerModelsRemoteService.models(for: .openai).map(ProviderModel.init(model:))
                 case .codex:
-                    return codexClient.models()
+                    return try await providerModelsRemoteService.models(for: .codex).map(ProviderModel.init(model:))
                 case .gemini:
-                    return geminiClient.models()
+                    return try await providerModelsRemoteService.models(for: .gemini).map(ProviderModel.init(model:))
             }
         } chat: { provider, model, prompt in
             switch provider {

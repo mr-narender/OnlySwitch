@@ -7,12 +7,13 @@
 
 import Foundation
 import Dependencies
+import Networking
 
 extension EvolutionGalleryService: DependencyKey {
     static var liveValue: Self { Self(
         fetchGalleryList: {
             do {
-                let evolutionGalleryModels = try await GitHubPresenter.shared.requestEvolutionJson()
+                let evolutionGalleryModels = try await GitHubPresenter.shared.requestEvolutionJson(type: [EvolutionGalleryModel].self)
                 return EvolutionGalleryAdaptor.convertToGallery(from: evolutionGalleryModels)
             } catch {
                 guard let url = Bundle.main.url(forResource: "EvolutionMarket", withExtension: "json") else {
@@ -26,7 +27,7 @@ extension EvolutionGalleryService: DependencyKey {
         },
         checkInstallation: { id in
             do {
-                guard let entity = try EvolutionCommandEntity.fetchRequest(by: id) else {
+                guard try EvolutionCommandEntity.fetchRequest(by: id) != nil else {
                     return false
                 }
                 return true

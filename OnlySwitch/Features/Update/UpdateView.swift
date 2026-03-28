@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import Networking
 
 struct UpdateView: View {
     @ObservedObject var updateVM:UpdateVM

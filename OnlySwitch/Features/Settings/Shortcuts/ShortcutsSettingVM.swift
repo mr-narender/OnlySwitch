@@ -8,6 +8,7 @@
 import Foundation
 import KeyboardShortcuts
 import Alamofire
+import Networking
 import Switches
 
 class ShortcutsItem: ObservableObject {
@@ -172,7 +173,7 @@ final class ShortcutsSettingVM:ObservableObject, @unchecked Sendable {
     func loadData() {
         //for test
         //        self.loadDataFromLocal()
-        self.presenter.requestShortcutsJson { result in
+        self.presenter.requestShortcutsJson(type: [ShortcutOnMarket].self) { result in
             switch result {
             case let .success(list):
                 self.model.sharedShortcutsList = list.map{SharedShortcutsItem(shortcutInfo: $0)}

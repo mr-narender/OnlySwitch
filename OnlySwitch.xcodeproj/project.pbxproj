@@ -39,9 +39,6 @@
 		043488AB2A364EBF006C877D /* EvolutionRowReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 043488AA2A364EBF006C877D /* EvolutionRowReducer.swift */; };
 		043488AE2A3B472E006C877D /* EvolutionBarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 043488AD2A3B472E006C877D /* EvolutionBarView.swift */; };
 		043488B02A3B4B7A006C877D /* EvolutionBarVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = 043488AF2A3B4B7A006C877D /* EvolutionBarVM.swift */; };
-		0434B4C0287388ED00F06AB9 /* GitHubRepositoryProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0434B4BF287388ED00F06AB9 /* GitHubRepositoryProtocol.swift */; };
-		0434B4C1287388ED00F06AB9 /* GitHubRepositoryProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0434B4BF287388ED00F06AB9 /* GitHubRepositoryProtocol.swift */; };
-		0434B4C82873A83D00F06AB9 /* RequestError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0444D5D32836D93A00327D0B /* RequestError.swift */; };
 		0434B4C92874DB2700F06AB9 /* ShortcutsMarket.json in Resources */ = {isa = PBXBuildFile; fileRef = 046331D22795DACB00C5F894 /* ShortcutsMarket.json */; };
 		0434B4CA2874E1B600F06AB9 /* Releases_mock.json in Resources */ = {isa = PBXBuildFile; fileRef = 0434B4BD2873882100F06AB9 /* Releases_mock.json */; };
 		0434B4CB2874E1B900F06AB9 /* Latest_release_mock.json in Resources */ = {isa = PBXBuildFile; fileRef = 0434B4C328738E7400F06AB9 /* Latest_release_mock.json */; };
@@ -71,11 +68,9 @@
 		04447B722754FE3800CD2900 /* SwitchListVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04447B712754FE3800CD2900 /* SwitchListVM.swift */; };
 		04447B7627550F6900CD2900 /* VisualEffectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04447B7527550F6900CD2900 /* VisualEffectView.swift */; };
 		04447B782755129D00CD2900 /* EventMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04447B772755129D00CD2900 /* EventMonitor.swift */; };
-		0444D5CE283683B100327D0B /* GitHubPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04A6B54F2771F338003B2647 /* GitHubPresenter.swift */; };
 		0444D5CF283683D800327D0B /* SystemInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0427B25A275D786400AD783A /* SystemInfo.swift */; };
 		0444D5D0283683DF00327D0B /* GitHubReleaseModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04F118C327AED8BC005DA861 /* GitHubReleaseModel.swift */; };
 		0444D5D22836D87E00327D0B /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 0444D5D12836D87E00327D0B /* Alamofire */; };
-		0444D5D42836D93A00327D0B /* RequestError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0444D5D32836D93A00327D0B /* RequestError.swift */; };
 		0444D5D92836F1BA00327D0B /* CurrentScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04E2AD1D2783B63600BC5DF3 /* CurrentScreen.swift */; };
 		0444D5DB2836F1DC00327D0B /* MetadataExtractorError.swift in Sources */ = {isa = PBXBuildFile; fileRef = 040E97262760FF3E003D9D42 /* MetadataExtractorError.swift */; };
 		0444D5E32838611600327D0B /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 043E5D6C2757DADB00ADC004 /* AVFoundation.framework */; };
@@ -271,7 +266,6 @@
 		04972F8A2C9F449200896D77 /* OnlyControlReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04972F892C9F448C00896D77 /* OnlyControlReducer.swift */; };
 		04A23B23275D5FC500B454C8 /* CoreBrightness.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 04A23B22275D5FC500B454C8 /* CoreBrightness.framework */; };
 		04A6B54B27715F90003B2647 /* Alamofire in Frameworks */ = {isa = PBXBuildFile; productRef = 04A6B54A27715F90003B2647 /* Alamofire */; };
-		04A6B5502771F338003B2647 /* GitHubPresenter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04A6B54F2771F338003B2647 /* GitHubPresenter.swift */; };
 		04A6F9432788807800E3300F /* BarProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04A6F9422788807800E3300F /* BarProvider.swift */; };
 		04A6F9452788EF4A00E3300F /* CursorModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04A6F9442788EF4A00E3300F /* CursorModifier.swift */; };
 		04A9675A2786133F00F12830 /* GeneralVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04A967592786133F00F12830 /* GeneralVM.swift */; };
@@ -351,10 +345,6 @@
 		04FB3E72288D54B700F3B5E1 /* SwitchListModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04B25454283C06C700D253E2 /* SwitchListModel.swift */; };
 		04FB3E73288D54C400F3B5E1 /* ShortcutsBarVM.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04EB1CD52781299A00C612AB /* ShortcutsBarVM.swift */; };
 		04FB3E74288D54D700F3B5E1 /* ShortcutsBarModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04B25456283C0F8800D253E2 /* ShortcutsBarModel.swift */; };
-		04FC160A283D8A9800D4A4AC /* GitHubInteractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC1609283D8A9800D4A4AC /* GitHubInteractor.swift */; };
-		04FC160E283D9B9000D4A4AC /* GitHubInteractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC1609283D8A9800D4A4AC /* GitHubInteractor.swift */; };
-		04FC1610283F92B200D4A4AC /* GitHubEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC160F283F92B200D4A4AC /* GitHubEndpoint.swift */; };
-		04FC1611283F92B200D4A4AC /* GitHubEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC160F283F92B200D4A4AC /* GitHubEndpoint.swift */; };
 		04FC1613283FDE1D00D4A4AC /* ShortcutsSettingModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC1612283FDE1D00D4A4AC /* ShortcutsSettingModel.swift */; };
 		04FC161628402E5000D4A4AC /* ShortcutOnMarket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC161528402E5000D4A4AC /* ShortcutOnMarket.swift */; };
 		04FC161728402E5200D4A4AC /* ShortcutOnMarket.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04FC161528402E5000D4A4AC /* ShortcutOnMarket.swift */; };
@@ -444,7 +434,6 @@
 		043488AD2A3B472E006C877D /* EvolutionBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvolutionBarView.swift; sourceTree = "<group>"; };
 		043488AF2A3B4B7A006C877D /* EvolutionBarVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EvolutionBarVM.swift; sourceTree = "<group>"; };
 		0434B4BD2873882100F06AB9 /* Releases_mock.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Releases_mock.json; sourceTree = "<group>"; };
-		0434B4BF287388ED00F06AB9 /* GitHubRepositoryProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubRepositoryProtocol.swift; sourceTree = "<group>"; };
 		0434B4C328738E7400F06AB9 /* Latest_release_mock.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Latest_release_mock.json; sourceTree = "<group>"; };
 		0434B4CE2876031C00F06AB9 /* RadioPlayerItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RadioPlayerItem.swift; sourceTree = "<group>"; };
 		0434B4D02876325B00F06AB9 /* HostWindowFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostWindowFinder.swift; sourceTree = "<group>"; };
@@ -472,7 +461,6 @@
 		04447B712754FE3800CD2900 /* SwitchListVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SwitchListVM.swift; sourceTree = "<group>"; };
 		04447B7527550F6900CD2900 /* VisualEffectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VisualEffectView.swift; sourceTree = "<group>"; };
 		04447B772755129D00CD2900 /* EventMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EventMonitor.swift; sourceTree = "<group>"; };
-		0444D5D32836D93A00327D0B /* RequestError.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RequestError.swift; sourceTree = "<group>"; };
 		0444D5E12838600000327D0B /* CoreBluetooth.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBluetooth.framework; path = System/Library/Frameworks/CoreBluetooth.framework; sourceTree = SDKROOT; };
 		0444D5EA28393FF800327D0B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		0444D5FA2839827A00327D0B /* PureColorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PureColorView.swift; sourceTree = "<group>"; };
@@ -611,7 +599,6 @@
 		04A23B22275D5FC500B454C8 /* CoreBrightness.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreBrightness.framework; path = ../../../../System/Library/PrivateFrameworks/CoreBrightness.framework; sourceTree = "<group>"; };
 		04A23B2C275D641900B454C8 /* OnlySwitch-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "OnlySwitch-Bridging-Header.h"; sourceTree = "<group>"; };
 		04A23B2D275D69F700B454C8 /* CBBlueLightClient.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CBBlueLightClient.h; sourceTree = "<group>"; };
-		04A6B54F2771F338003B2647 /* GitHubPresenter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubPresenter.swift; sourceTree = "<group>"; };
 		04A6F9422788807800E3300F /* BarProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BarProvider.swift; sourceTree = "<group>"; };
 		04A6F9442788EF4A00E3300F /* CursorModifier.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CursorModifier.swift; sourceTree = "<group>"; };
 		04A967592786133F00F12830 /* GeneralVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralVM.swift; sourceTree = "<group>"; };
@@ -677,8 +664,6 @@
 		04F118C327AED8BC005DA861 /* GitHubReleaseModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubReleaseModel.swift; sourceTree = "<group>"; };
 		04F118C527AED8EE005DA861 /* AboutVM.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AboutVM.swift; sourceTree = "<group>"; };
 		04FB3E5F288D49E100F3B5E1 /* SettingsWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindow.swift; sourceTree = "<group>"; };
-		04FC1609283D8A9800D4A4AC /* GitHubInteractor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubInteractor.swift; sourceTree = "<group>"; };
-		04FC160F283F92B200D4A4AC /* GitHubEndpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitHubEndpoint.swift; sourceTree = "<group>"; };
 		04FC1612283FDE1D00D4A4AC /* ShortcutsSettingModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutsSettingModel.swift; sourceTree = "<group>"; };
 		04FC161528402E5000D4A4AC /* ShortcutOnMarket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShortcutOnMarket.swift; sourceTree = "<group>"; };
 		A1D0E0012F0A000100BEEF01 /* AuthenticatorModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthenticatorModels.swift; sourceTree = "<group>"; };
@@ -1666,11 +1651,6 @@
 		04FC1608283D89A700D4A4AC /* Networking */ = {
 			isa = PBXGroup;
 			children = (
-				0444D5D32836D93A00327D0B /* RequestError.swift */,
-				04A6B54F2771F338003B2647 /* GitHubPresenter.swift */,
-				04FC1609283D8A9800D4A4AC /* GitHubInteractor.swift */,
-				04FC160F283F92B200D4A4AC /* GitHubEndpoint.swift */,
-				0434B4BF287388ED00F06AB9 /* GitHubRepositoryProtocol.swift */,
 			);
 			path = Networking;
 			sourceTree = "<group>";
@@ -1970,7 +1950,6 @@
 				04E89D5F289B054C00667710 /* IOService.swift in Sources */,
 				0447E3862B71746E00D07B9A /* HiddenDesktopSwitch.swift in Sources */,
 				04FC161728402E5200D4A4AC /* ShortcutOnMarket.swift in Sources */,
-				04FC1611283F92B200D4A4AC /* GitHubEndpoint.swift in Sources */,
 				0447E35E2B71746E00D07B9A /* AppleMusicSwitch.swift in Sources */,
 				0447E3942B71746E00D07B9A /* LowPowerModeSwitch.swift in Sources */,
 				0447E3902B71746E00D07B9A /* HiddenFilesSwitch.swift in Sources */,
@@ -1979,11 +1958,9 @@
 				0447E3642B71746E00D07B9A /* BackNoisesSwitch.swift in Sources */,
 				0447E36E2B71746E00D07B9A /* EjectDiscsSwitch.swift in Sources */,
 				0447E3682B71746E00D07B9A /* ScreenSaverSwitch.swift in Sources */,
-				0434B4C1287388ED00F06AB9 /* GitHubRepositoryProtocol.swift in Sources */,
 				04FB3E73288D54C400F3B5E1 /* ShortcutsBarVM.swift in Sources */,
 				047C1E742A22B12E0061235D /* EvolutionCommandService+Test.swift in Sources */,
 				047C1E6B2A2298AB0061235D /* EvolutionListService+Test.swift in Sources */,
-				04FC160E283D9B9000D4A4AC /* GitHubInteractor.swift in Sources */,
 				047C1E5F2A2262640061235D /* EvolutionModel.swift in Sources */,
 				0447E37A2B71746E00D07B9A /* TopStickerSwitch.swift in Sources */,
 				0444D5E72839315A00327D0B /* BluetoothDevicesManager.swift in Sources */,
@@ -2015,10 +1992,8 @@
 				047C1E662A2297490061235D /* Evolution+Dependencies.swift in Sources */,
 				047C1E622A22960D0061235D /* EvolutionListService.swift in Sources */,
 				04FB3E6F288D548900F3B5E1 /* BarProvider.swift in Sources */,
-				0444D5D42836D93A00327D0B /* RequestError.swift in Sources */,
 				04BC8EC4284FE9B5009E605F /* Preferences.swift in Sources */,
 				0447E3522B71746E00D07B9A /* MuteMicSwitch.swift in Sources */,
-				0444D5CE283683B100327D0B /* GitHubPresenter.swift in Sources */,
 				047C1E522A2252620061235D /* EvolutionReducer.swift in Sources */,
 				0447E38A2B71746E00D07B9A /* AutohideDockSwitch.swift in Sources */,
 				041D725728353A160083092D /* OnlySwitchTests.swift in Sources */,
@@ -2151,13 +2126,11 @@
 				0493376427625D6F00AE779A /* RadioPlayerItemViewModel.swift in Sources */,
 				0447E3632B71746E00D07B9A /* XcodeCacheSwitch.swift in Sources */,
 				04FC1613283FDE1D00D4A4AC /* ShortcutsSettingModel.swift in Sources */,
-				04FC160A283D8A9800D4A4AC /* GitHubInteractor.swift in Sources */,
 				0447E3792B71746E00D07B9A /* EmptyTrashSwitch.swift in Sources */,
 				0427364927C1A5430068108F /* SpotifyBridge.swift in Sources */,
 				0406EDD12ACB65C50015F4D0 /* EvolutionGalleryService.swift in Sources */,
 				048D10992AED92EA00ACB181 /* StickerReducer.swift in Sources */,
 				0451766B27C284D600006BA0 /* iTunesScripting.swift in Sources */,
-				04A6B5502771F338003B2647 /* GitHubPresenter.swift in Sources */,
 				04581DBB27651EF1008ADF30 /* RollingText.swift in Sources */,
 				0493374427625A1E00AE779A /* AudioPlayer.swift in Sources */,
 				0447E3532B71746E00D07B9A /* MuteMicSwitch.swift in Sources */,
@@ -2193,13 +2166,11 @@
 				04447B782755129D00CD2900 /* EventMonitor.swift in Sources */,
 				0447E36F2B71746E00D07B9A /* EjectDiscsSwitch.swift in Sources */,
 				0447E3852B71746E00D07B9A /* PomodoroTimerSwitch.swift in Sources */,
-				0434B4C0287388ED00F06AB9 /* GitHubRepositoryProtocol.swift in Sources */,
 				A93C8BE12ECA34D700D7CE52 /* AICommanderSwitch.swift in Sources */,
 				047C1E682A2297DC0061235D /* EvolutionListService+Live.swift in Sources */,
 				04E517052846C048009826AB /* PomodoroTimerSettingModel.swift in Sources */,
 				047140C02778A478005B160B /* PomodoroTimerSettingVM.swift in Sources */,
 				04B25459283C12A800D253E2 /* GeneralModel.swift in Sources */,
-				04FC1610283F92B200D4A4AC /* GitHubEndpoint.swift in Sources */,
 				04EB1CD02780F36F00C612AB /* ShortcutsSettingVM.swift in Sources */,
 				047C1E782A24D2590061235D /* EvolutionCommandEditingReducer.swift in Sources */,
 				0447E3652B71746E00D07B9A /* BackNoisesSwitch.swift in Sources */,
@@ -2256,7 +2227,6 @@
 				0447E3832B71746E00D07B9A /* ShowUserLibrarySwitch.swift in Sources */,
 				0493379E2763C0E800AE779A /* Persistence.swift in Sources */,
 				0447E37B2B71746E00D07B9A /* TopStickerSwitch.swift in Sources */,
-				0434B4C82873A83D00F06AB9 /* RequestError.swift in Sources */,
 				043F08B12E85B6BB007848FC /* StickerSharedKey.swift in Sources */,
 				0456C92B2ACB69C400DB7898 /* EvolutionGalleryAdaptor.swift in Sources */,
 				0493375A27625A1E00AE779A /* DownloadingDelegate.swift in Sources */,

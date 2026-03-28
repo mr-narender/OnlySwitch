@@ -19,18 +19,6 @@ public enum CodexError: Error {
 
 final class CodexLive: Sendable {
     @Sendable
-    func models() -> [ProviderModel] {
-        [
-            "codex-mini-latest",
-            "gpt-5.3-codex",
-            "gpt-5.2-codex",
-            "gpt-5.1-codex-max",
-            "gpt-5.1-codex-mini"
-        ]
-        .map(ProviderModel.init)
-    }
-
-    @Sendable
     func signIn() async throws -> ChatGPTSession {
         await prepareForInteractiveSignIn()
         return try await signInOnMainActor()

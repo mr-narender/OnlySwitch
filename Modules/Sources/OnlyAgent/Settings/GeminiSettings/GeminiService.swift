@@ -23,18 +23,6 @@ final class GeminiLive: Sendable {
     }
     
     @Sendable
-    func models() -> [ProviderModel] {
-        [
-            "gemini-3-pro-preview",
-            "gemini-3-flash-preview",
-            "gemini-2.5-pro",
-            "gemini-2.5-flash",
-            "gemini-2.5-flash-lite"
-        ]
-            .map(ProviderModel.init)
-    }
-    
-    @Sendable
     func chat(_ model: String, _ prompt: String) async throws -> String {
         @Shared(.geminiAPIKey) var apiKeyShared: String = ""
         let apiKey: String = apiKeyShared

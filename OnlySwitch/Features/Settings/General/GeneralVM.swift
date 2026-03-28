@@ -8,6 +8,7 @@
 import AppKit
 import Combine
 import KeyboardShortcuts
+import Networking
 import Sharing
 import Foundation
 
@@ -170,7 +171,7 @@ class GeneralVM: ObservableObject {
 
     func checkUpdate() {
         self.model.showProgress = true
-        checkUpdatePresenter.checkUpdate { result in
+        checkUpdatePresenter.checkUpdate(releaseType: GitHubRelease.self) { result in
             switch result {
             case .success:
                 self.model.newestVersion = self.checkUpdatePresenter.latestVersion

@@ -8,6 +8,7 @@
 import Defines
 import SwiftUI
 import AppKit
+import Networking
 
 @MainActor
 enum OpenWindows: CurrentScreen {

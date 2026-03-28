@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Networking
 
 @MainActor
 class UpdateVM: ObservableObject {

@@ -12,6 +12,7 @@ import Defines
 import Switches
 import Utilities
 import OnlyControl
+import Networking
 import FirebaseCore
 import Extensions
 
@@ -202,7 +203,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func checkUpdate() {
-        checkUpdatePresenter.checkUpdate { result in
+        checkUpdatePresenter.checkUpdate(releaseType: GitHubRelease.self) { result in
             switch result {
             case .success:
                 let newestVersion = self.checkUpdatePresenter.latestVersion

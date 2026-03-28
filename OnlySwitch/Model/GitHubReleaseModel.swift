@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import Networking
 
 struct ReleaseAssets:Decodable {
     let id:Int
@@ -36,6 +37,8 @@ struct ReleaseAssets:Decodable {
         case download_count
     }
 }
+
+extension ReleaseAssets: GitHubReleaseAssetLike {}
 
 struct GitHubRelease:Decodable {
     let id:Int
@@ -75,3 +78,6 @@ struct GitHubRelease:Decodable {
     }
 }
 
+extension GitHubRelease: GitHubReleaseLike {
+    typealias ReleaseAsset = ReleaseAssets
+}

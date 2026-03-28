@@ -7,6 +7,7 @@
 
 import Foundation
 import Alamofire
+import Networking
 
 @MainActor
 class AboutVM:ObservableObject {
@@ -17,7 +18,7 @@ class AboutVM:ObservableObject {
     private var presenter = GitHubPresenter()
     
     func requestReleases() {
-        presenter.requestReleases { [self] result in
+        presenter.requestReleases(releaseType: GitHubRelease.self) { [self] result in
             switch result {
             case .success:
                 self.downloadCount = presenter.downloadCount

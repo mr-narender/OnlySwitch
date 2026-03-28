@@ -37,6 +37,10 @@ let package = Package(
             targets: ["Design"]
         ),
         .library(
+            name: "Networking",
+            targets: ["Networking"]
+        ),
+        .library(
             name: "OnlyAgent",
             targets: ["OnlyAgent"]
         )
@@ -91,6 +95,12 @@ let package = Package(
         .target(name: "Reorderable"),
         .target(name: "Design"),
         .target(
+            name: "Networking",
+            dependencies: [
+                .product(name: "Alamofire", package: "Alamofire")
+            ]
+        ),
+        .target(
             name: "OnlyAgent",
             dependencies: [
                 .product(name: "SwiftUIIntrospect", package: "swiftui-introspect"),
@@ -103,7 +113,8 @@ let package = Package(
                 .product(name: "CodexKit", package: "CodexKit"),
                 "Extensions",
                 "Defines",
-                "Design"
+                "Design",
+                "Networking"
             ],
             resources: [
                 .process("Resources")
