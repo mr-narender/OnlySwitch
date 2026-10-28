@@ -39,6 +39,7 @@ public extension UserDefaults {
         public static let autoCollapseMenubarTime = "autoCollapseMenubarTimeKey"
         public static let menubarCollapsable = "menubarCollapsableKey"
         //Switch
+        public static let didInstallTailscaleSwitch = "didInstallTailscaleSwitchKey"
         public static let SwitchState = "SwitchStateKey"
         public static let didInstallReverseScrollDirectionSwitch = "didInstallReverseScrollDirectionSwitchKey"
         public static let reverseScrollDirectionEnabled = "reverseScrollDirectionEnabledKey"
@@ -67,6 +68,7 @@ public extension UserDefaults {
         public static let autoStopKeepAwakeTime = "autoStopKeepAwakeTimeKey"
         public static let autoStopKeepAwakeStartDate = "autoStopKeepAwakeStartDateKey"
         public static let autoStopKeepAwakeEndDate = "autoStopKeepAwakeEndDateKey"
+        public static let autoStopKeepAwakeOnSleep = "autoStopKeepAwakeOnSleepKey"
         public static let KeepAwakeKey = "KeepAwakeKey"
         //Dim Screen
         public static let autoDimScreenTime = "autoDimScreenTimeKey"
@@ -132,7 +134,7 @@ public extension UserDefaults {
             soundMixerEnabled,
             systemMonitorPreferences, showSystemMonitorTab, showXcodeCleanerTab, showAppUninstallerTab,
             backNoisesTrack, automaticallyStopPlayNoiseTime,
-            autoStopKeepAwakeMode, autoStopKeepAwakeTime, autoStopKeepAwakeStartDate, autoStopKeepAwakeEndDate, KeepAwakeKey,
+            autoStopKeepAwakeMode, autoStopKeepAwakeTime, autoStopKeepAwakeStartDate, autoStopKeepAwakeEndDate, autoStopKeepAwakeOnSleep, KeepAwakeKey,
             autoDimScreenTime, dimScreenPercent, syncExternalBrightness,
             nightShiftStrength, nightShiftStartDate, nightShiftEndDate, isNightShiftScheduleOn,
             sticker,
