@@ -6,7 +6,10 @@
 //
 
 import AppKit
+import ComposableArchitecture
+import SoundMixerEQ
 import CoreAudio
+import DisplayDDC
 import Extensions
 import RemoteCore
 import SwiftUI
@@ -46,10 +49,17 @@ final class SoundMixerVM: ObservableObject {
     /// the mixer is turned on and off like every other switch instead of through its own setting.
     @Published var enabled: Bool {
         didSet {
+            lifecycleRevision += 1
             UserDefaults.standard.set(enabled, forKey: UserDefaults.Key.soundMixerEnabled)
-            guard !enabled else { return }
+            guard !enabled else {
+                Task { await refresh() }
+                return
+            }
+            updateVolumeKeyInterception()
             stopAutoRefresh()
             rows = []
+            equalizerStore.send(.sourcesChanged([]))
+            outputRoutingStore.send(.sourcesChanged([]))
             if #available(macOS 14.4, *) {
                 systemMixer?.releaseAllTaps()
             }
@@ -58,9 +68,48 @@ final class SoundMixerVM: ObservableObject {
 
     @Published var rows: [AppRow] = []
     @Published var systemVolume: Double = 50
+    /// False when the output device's volume can be changed neither by macOS nor over DDC.
+    @Published var isSystemVolumeAvailable = true
+    private var systemVolumeControl: SoundMixerService.SystemVolumeControl = .system
+    /// DDC reads occasionally fail, e.g. while another app talks to the display at the same time.
+    private var missedDisplayVolumeReads = 0
+    /// True while volume keys should drive the display but Accessibility is not granted yet.
+    @Published var needsAccessibilityForVolumeKeys = false
+    private lazy var volumeKeyTap = DisplayVolumeKeyTap { [weak self] key, fine in
+        self?.handleVolumeKey(key, fine: fine)
+    }
+    private lazy var volumeHUD = DisplayVolumeHUD()
+    private var displayVolumeBeforeMute: Double = 50
+    private var didPromptAccessibilityForVolumeKeys = false
+    // Only mutated on the main actor during init; read once in deinit after the last release.
+    nonisolated(unsafe) private var accessibilityObserver: NSObjectProtocol?
     /// The current default output device, shown in the panel's "Output" section.
     @Published var outputDevice: SoundMixerService.OutputDevice?
 
+    /// A single retained store serves both menu-bar hosts. Effects resolve current handles here,
+    /// never in SwiftUI or in persistent feature state.
+    lazy var equalizerStore: StoreOf<EqualizerFeature> = {
+        let store = Store(initialState: EqualizerFeature.State()) { EqualizerFeature() } withDependencies: {
+            $0.equalizerClient.apply = { [weak self] id, settings in
+                self?.applyEqualizer(settings, for: id) ?? .pending
+            }
+        }
+        store.send(.load)
+        return store
+    }()
+
+    lazy var outputRoutingStore: StoreOf<OutputRoutingFeature> = {
+        let store = Store(initialState: OutputRoutingFeature.State()) { OutputRoutingFeature() } withDependencies: {
+            $0.outputRoutingClient.apply = { [weak self] id, selection in
+                self?.applyOutputRoute(selection, for: id) ?? .pending
+            }
+        }
+        store.send(.load)
+        store.send(.devicesChanged(service.outputEndpoints().map(\.device)))
+        return store
+    }()
+
+    private var lifecycleRevision = 0
     private let service = SoundMixerService()
     /// Stored type-erased so the class stays available below macOS 14.4 (scriptable apps still work).
     private var systemMixerBox: AnyObject?
@@ -86,15 +135,36 @@ final class SoundMixerVM: ObservableObject {
     private init() {
         enabled = UserDefaults.standard.bool(forKey: UserDefaults.Key.soundMixerEnabled)
         if #available(macOS 14.4, *) {
-            systemMixerBox = SystemAudioMixer()
+            let mixer = SystemAudioMixer()
+            systemMixerBox = mixer
+            mixer.onOutputDevicesChanged = { [weak self] in
+                self?.refreshRoutingDevices()
+                Task { [weak self] in await self?.refresh() }
+            }
         }
         observeRunningApps()
+        // Granting Accessibility in System Settings must start the volume keys without a restart.
+        accessibilityObserver = DistributedNotificationCenter.default().addObserver(
+            forName: NSNotification.Name("com.apple.accessibility.api"), object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                // The trust state settles shortly after the notification.
+                try? await Task.sleep(for: .milliseconds(500))
+                guard let self, self.needsAccessibilityForVolumeKeys else { return }
+                self.updateVolumeKeyInterception()
+            }
+        }
+        // Display volume keys must follow the output without the panel ever being opened.
+        if enabled { Task { await refresh() } }
     }
 
     deinit {
         let center = NSWorkspace.shared.notificationCenter
         for observer in workspaceObservers {
             center.removeObserver(observer)
+        }
+        if let accessibilityObserver {
+            DistributedNotificationCenter.default().removeObserver(accessibilityObserver)
         }
     }
 
@@ -181,13 +251,25 @@ final class SoundMixerVM: ObservableObject {
         // tearing down the same taps.
         guard !isRefreshing else { return }
         isRefreshing = true
+        let revision = lifecycleRevision
         defer { isRefreshing = false }
 
-        if let sys = await service.systemVolume() {
-            systemVolume = Double(sys)
+        // Skip the device read while a write is queued; a DDC read would return the old value.
+        if volumeWriters[Self.systemVolumeKey] == nil {
+            let sys = await service.systemVolume()
+            guard enabled, revision == lifecycleRevision, !Task.isCancelled, !isInteracting else { return }
+            if case .display = systemVolumeControl, sys.control == .unavailable, missedDisplayVolumeReads < 1 {
+                missedDisplayVolumeReads += 1
+            } else {
+                missedDisplayVolumeReads = 0
+                systemVolumeControl = sys.control
+                isSystemVolumeAvailable = sys.control != .unavailable
+                if let value = sys.value { systemVolume = Double(value) }
+            }
+            updateVolumeKeyInterception()
         }
 
-        outputDevice = service.currentOutputDevice()
+        refreshRoutingDevices()
 
         var newRows: [AppRow] = []
 
@@ -196,6 +278,7 @@ final class SoundMixerVM: ObservableObject {
         let scriptableBundleIDs = Set(scriptable.map { $0.app.bundleID })
         for entry in scriptable {
             let volume = await service.volume(of: entry.app) ?? 0
+            guard enabled, revision == lifecycleRevision, !Task.isCancelled, !isInteracting else { return }
             let previous = rows.first { $0.id == entry.app.bundleID }
             let restore = volume > 0 ? Double(volume) : (previous?.volumeBeforeMute ?? 50)
             newRows.append(
@@ -212,7 +295,14 @@ final class SoundMixerVM: ObservableObject {
 
         // Any other app currently playing audio (e.g. a browser) → volume via a process tap.
         if #available(macOS 14.4, *), let mixer = systemMixer {
-            for audioApp in mixer.audioPlayingApps(excludingBundleIDs: scriptableBundleIDs) {
+            let audioApps = mixer.audioPlayingApps(excludingBundleIDs: [])
+            for index in newRows.indices {
+                if let audio = audioApps.first(where: { $0.bundleID == newRows[index].id }) {
+                    newRows[index].pid = audio.pid
+                    newRows[index].processObjectIDs = audio.processObjectIDs
+                }
+            }
+            for audioApp in audioApps where !scriptableBundleIDs.contains(audioApp.bundleID ?? "") {
                 let id = audioApp.bundleID ?? "pid-\(audioApp.pid)"
                 let previous = rows.first { $0.id == id }
                 newRows.append(
@@ -231,15 +321,60 @@ final class SoundMixerVM: ObservableObject {
 
         // Only publish real changes. Reassigning every two seconds relaid out the whole popover
         // under the pointer, which churned SwiftUI's focus tracking for no gain.
-        if Self.signature(of: newRows) != Self.signature(of: rows) {
-            rows = newRows
+        if Self.signature(of: newRows) != Self.signature(of: rows) { rows = newRows }
+        let supported: Bool
+        if #available(macOS 14.4, *) { supported = true } else { supported = false }
+        let sources = rows.map {
+            EqualizerFeature.Source(id: $0.id, isPersistent: !$0.id.hasPrefix("pid-"), isSupported: supported,
+                                    isAvailable: $0.pid != nil && !$0.processObjectIDs.isEmpty)
         }
+        outputRoutingStore.send(.sourcesChanged(sources))
+        equalizerStore.send(.sourcesChanged(sources))
+    }
+
+    private func applyEqualizer(_ settings: EqualizerSettings, for id: String) -> EqualizerFeature.Status {
+        guard enabled else { return .pending }
+        guard #available(macOS 14.4, *), let mixer = systemMixer else { return .unsupported }
+        guard let row = rows.first(where: { $0.id == id }), let pid = row.pid,
+              !row.processObjectIDs.isEmpty else { return .pending }
+        // Native/scriptable volume is already applied upstream. Its EQ chain must use unity gain.
+        let gain = row.control == .scriptable ? 1 : row.volume / 100
+        guard mixer.setConfiguration(gain: gain, settings: settings, pid: pid,
+                                     processObjectIDs: row.processObjectIDs, live: false,
+                                     routing: outputRoutingStore.withState { $0.selection(for: id) }) else { return .unavailable }
+        if settings.isFlat { return .flat }
+        return mixer.isReceivingAudio(pid: pid) ? .active : .waitingForAudio
+    }
+
+    private func refreshRoutingDevices() {
+        outputDevice = service.currentOutputDevice()
+        let devices = service.outputEndpoints().map(\.device)
+        if outputRoutingStore.withState({ $0.devices }) != devices {
+            outputRoutingStore.send(.devicesChanged(devices))
+        }
+    }
+
+    private func applyOutputRoute(_ selection: OutputRouteSelection, for id: String) -> OutputRoutingFeature.Status {
+        guard enabled else { return .pending }
+        guard #available(macOS 14.4, *), let mixer = systemMixer else { return .unsupported }
+        guard let row = rows.first(where: { $0.id == id }), let pid = row.pid,
+              !row.processObjectIDs.isEmpty else { return .pending }
+        let resolution = OutputRouteResolution(selection: selection, devices: service.outputEndpoints().map(\.device))
+        let gain = row.control == .scriptable ? 1 : row.volume / 100
+        let applied = mixer.setConfiguration(gain: gain, settings: equalizerStore.withState { $0.settings(for: id) },
+                                             pid: pid, processObjectIDs: row.processObjectIDs, live: false,
+                                             routing: selection)
+        if resolution.isWaiting { return .waitingForDevices }
+        guard applied else { return .unavailable }
+        if selection.followsSystem { return .followingSystem }
+        if !resolution.missingUIDs.isEmpty { return .partial }
+        return mixer.isReceivingAudio(pid: pid) ? .active : .pending
     }
 
     /// Everything the panel actually draws. Icons and the backing handles are left out: they follow
     /// from the id, and `NSImage` is not comparable in any cheap way.
     private static func signature(of rows: [AppRow]) -> [String] {
-        rows.map { "\($0.id)|\($0.name)|\(Int($0.volume))|\($0.isMuted)|\($0.processObjectIDs)" }
+        rows.map { "\($0.id)|\($0.name)|\(Int($0.volume))|\($0.isMuted)|\($0.pid ?? 0)|\($0.processObjectIDs)" }
     }
 
     // MARK: - Interaction
@@ -274,8 +409,10 @@ final class SoundMixerVM: ObservableObject {
         case .systemTap:
             // The tap's own callback applies the gain, so there is no round-trip to rate-limit.
             guard #available(macOS 14.4, *), let mixer = systemMixer, let pid = rows[index].pid else { return }
-            mixer.setVolume(rows[index].volume / 100, pid: pid,
-                            processObjectIDs: rows[index].processObjectIDs, live: live)
+            mixer.setConfiguration(gain: rows[index].volume / 100,
+                                   settings: equalizerStore.withState { $0.settings(for: id) }, pid: pid,
+                                   processObjectIDs: rows[index].processObjectIDs, live: live,
+                                   routing: outputRoutingStore.withState { $0.selection(for: id) })
         }
     }
 
@@ -339,9 +476,45 @@ final class SoundMixerVM: ObservableObject {
     /// Same one-way flow as the per-app sliders.
     func updateSystemVolume(_ value: Double, live: Bool) {
         isInteracting = live
+        guard isSystemVolumeAvailable else { return }
         systemVolume = value
         let service = service
-        scheduleWrite(Int(value), key: Self.systemVolumeKey) { await service.setSystemVolume($0) }
+        let control = systemVolumeControl
+        scheduleWrite(Int(value.rounded()), key: Self.systemVolumeKey) { await service.setSystemVolume($0, via: control) }
+    }
+
+    /// Volume keys drive the display only while its volume is reached over DDC; otherwise the tap
+    /// is stopped and macOS handles the keys itself.
+    private func updateVolumeKeyInterception() {
+        let wantsKeys: Bool
+        if enabled, case .display = systemVolumeControl { wantsKeys = true } else { wantsKeys = false }
+        volumeKeyTap.interceptsVolumeKeys = wantsKeys
+        guard wantsKeys else {
+            if volumeKeyTap.isRunning { volumeKeyTap.stop() }
+            needsAccessibilityForVolumeKeys = false
+            return
+        }
+        if !volumeKeyTap.isRunning {
+            let options = ["AXTrustedCheckOptionPrompt": !didPromptAccessibilityForVolumeKeys] as CFDictionary
+            didPromptAccessibilityForVolumeKeys = true
+            if AXIsProcessTrustedWithOptions(options) { _ = volumeKeyTap.start() }
+        }
+        needsAccessibilityForVolumeKeys = !volumeKeyTap.isRunning
+    }
+
+    private func handleVolumeKey(_ key: VolumeKeyEvent.Key, fine: Bool) {
+        guard enabled, isSystemVolumeAvailable, case let .display(name) = systemVolumeControl else { return }
+        var level = DisplayVolumeLevel(volume: systemVolume, volumeBeforeMute: displayVolumeBeforeMute)
+        level.apply(key, fine: fine)
+        displayVolumeBeforeMute = level.volumeBeforeMute
+        updateSystemVolume(level.volume, live: false)
+        volumeHUD.show(volume: level.volume, isMuted: level.isMuted, onScreenNamed: name)
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
+        else { return }
+        NSWorkspace.shared.open(url)
     }
 
     /// Opens the system Sound settings, so the panel can stand in for "Sound Settings…".

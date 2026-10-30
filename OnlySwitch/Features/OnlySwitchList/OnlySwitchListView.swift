@@ -17,6 +17,7 @@ import OnlyAgent
 import Aphrodite
 import XcodeCleaner
 import AppUninstaller
+import Screenshots
 
 enum Focusable: Hashable {
   case none
@@ -26,6 +27,7 @@ enum Focusable: Hashable {
 struct OnlySwitchListView: View {
     private let onPanelSizeChange: @MainActor (CGSize) -> Void
     private let onOutsideClickRetentionChanged: @MainActor (Bool) -> Void
+    private let onSectionSelectionChanged: @MainActor (SectionBar.Section) -> Void
     @EnvironmentObject var switchVM:SwitchListVM
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
@@ -43,21 +45,24 @@ struct OnlySwitchListView: View {
     @State private var maximumPanelHeight = NSScreen.main?.visibleFrame.height ?? CGFloat(700)
     @State private var presentedPanelHeight: CGFloat?
     @State private var aphroditeStore: StoreOf<AphroditeReducer>
+    private let screenshotSectionRevealStore = SettingsVM.shared.screenshotSectionRevealStore
     @AppStorage(UserDefaults.Key.showClaudeUsageTab) private var showClaudeUsageTab = true
     @AppStorage(UserDefaults.Key.showCodexUsageTab) private var showCodexUsageTab = true
     @AppStorage(UserDefaults.Key.showSystemMonitorTab) private var showSystemMonitorTab = true
     @AppStorage(UserDefaults.Key.showAphroditeTab) private var showAphroditeTab = true
     @AppStorage(UserDefaults.Key.showXcodeCleanerTab) private var showXcodeCleanerTab = true
     @AppStorage(UserDefaults.Key.showAppUninstallerTab) private var showAppUninstallerTab = true
+    @AppStorage(UserDefaults.Key.showScreenshotsTab) private var showScreenshotsTab = true
 
     let columns = [
         GridItem(.fixed(Layout.popoverWidth - 40)),
         GridItem(.fixed(Layout.popoverWidth - 40))
     ]
 
-    init(onPanelSizeChange: @escaping @MainActor (CGSize) -> Void = { _ in }, onOutsideClickRetentionChanged: @escaping @MainActor (Bool) -> Void = { _ in }) {
+    init(onPanelSizeChange: @escaping @MainActor (CGSize) -> Void = { _ in }, onOutsideClickRetentionChanged: @escaping @MainActor (Bool) -> Void = { _ in }, onSectionSelectionChanged: @escaping @MainActor (SectionBar.Section) -> Void = { _ in }) {
         self.onPanelSizeChange = onPanelSizeChange
         self.onOutsideClickRetentionChanged = onOutsideClickRetentionChanged
+        self.onSectionSelectionChanged = onSectionSelectionChanged
         _aphroditeStore = State(initialValue: Store(initialState: .init()) { AphroditeReducer() })
     }
     
@@ -78,7 +83,12 @@ struct OnlySwitchListView: View {
                         bottomBar.opacity(0.7).padding(.top, 20)
                     }
                     if SectionBar.shouldShowBar(for: sections) {
-                        SystemMonitorSectionBar(sections: sections, selection: $selectedSection)
+                        SystemMonitorSectionBar(
+                            sections: sections,
+                            selection: $selectedSection,
+                            visibleSegmentLimit: SwitchListAppearance(rawValue: switchVM.currentAppearance) == .single
+                                ? SectionBar.singleColumnVisibleSegmentLimit : nil
+                        )
                             .padding(.top, 12)
                             .padding(.bottom, 2)
                     }
@@ -114,6 +124,9 @@ struct OnlySwitchListView: View {
                                 .id(languageManager.currentLang)
                         case .appUninstaller:
                             AppUninstallerView(store: SettingsVM.shared.appUninstallerStore, managesScrolling: false, compactPresentation: true)
+                                .id(languageManager.currentLang)
+                        case .screenshots:
+                            ScreenshotsView(store: SettingsVM.shared.screenshotsStore, compactPresentation: true)
                                 .id(languageManager.currentLang)
                         case .aphrodite:
                             if #available(macOS 26.0, *) {
@@ -163,10 +176,14 @@ struct OnlySwitchListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleMenubarCollapse, object: nil)) { _ in
             switchVM.refreshSingleSwitchStatus(type: .hideMenubarIcons)
         }
+        .onChange(of: screenshotSectionRevealStore.pendingHost) { _, _ in
+            consumeScreenshotSectionReveal()
+        }
         .onChange(of: sections) { _ in
             reconcileSectionSelection()
         }
         .onChange(of: selectedSection) { section in
+            onSectionSelectionChanged(section)
             onOutsideClickRetentionChanged(!section.allowsOutsideClickDismissal)
         }
         .onPreferenceChange(PanelContentHeightKey.self) { measuredContentHeight = $0.isFinite && $0 >= 0 ? $0 : nil }
@@ -187,9 +204,17 @@ struct OnlySwitchListView: View {
             updatePresentedPanelHeight(to: adaptivePanelHeight)
         }
         .onAppear {
+            consumeScreenshotSectionReveal()
             presentedPanelHeight = adaptivePanelHeight
+            onSectionSelectionChanged(selectedSection)
             onOutsideClickRetentionChanged(!selectedSection.allowsOutsideClickDismissal)
         }
+    }
+
+    private func consumeScreenshotSectionReveal() {
+        guard screenshotSectionRevealStore.pendingHost == .popover else { return }
+        if sections.contains(.screenshots) { selectedSection = .screenshots }
+        screenshotSectionRevealStore.send(.consumed(.popover))
     }
     
     var singleSwitchList: some View {
@@ -496,7 +521,7 @@ struct OnlySwitchListView: View {
             }).buttonStyle(.plain)
                 .padding(10)
                 .help(Text("Sort".localized()))
-                .isHidden(SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual)
+                .isHidden(selectedSection != .controls || SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual)
             
             Spacer()
             if playerItem.streamInfo == "" {
@@ -583,7 +608,8 @@ struct OnlySwitchListView: View {
             claudeUsage: showClaudeUsageTab,
             aphrodite: showAphroditeTab,
             xcodeCleaner: showXcodeCleanerTab,
-            appUninstaller: showAppUninstallerTab
+            appUninstaller: showAppUninstallerTab,
+            screenshots: showScreenshotsTab
         )
     }
 

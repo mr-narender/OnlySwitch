@@ -200,6 +200,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         Task { await remoteAccessController.startIfEnabled() }
         // Migrate API keys from UserDefaults to Keychain if needed
         KeychainMigration.migrateAPIKeysIfNeeded()
+        // Display volume keys must work before the Sound Mixer panel is ever opened.
+        _ = SoundMixerVM.shared
         //for issue #11
         closeWindow()
         let contentView = OnlySwitchListView(
@@ -209,6 +211,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             },
             onOutsideClickRetentionChanged: { [weak self] retainsOutsideClicks in
                 self?.statusBar?.listPreventsOutsideClickDismissal = retainsOutsideClicks
+            },
+            onSectionSelectionChanged: { [weak self] section in
+                self?.statusBar?.listSelectedSection = section
             }
         )
             .environmentObject(switchVM)
@@ -218,6 +223,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         popover.contentViewController = NSHostingController(rootView: contentView)
 
         statusBar = StatusBarController(popover)
+        // Collect screenshots (and reveal/fly new captures) before any list host has appeared.
+        SettingsVM.shared.screenshotsStore.send(.task)
         setupDesktopPet()
         setupDockPreview()
 
@@ -445,6 +452,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     private func registerShortcut() {
         KeyboardShortcuts.onKeyDown(for: .invokePopoverShortcutsName) {
             NotificationCenter.default.post(name: .togglePopover, object: nil)
+        }
+
+        KeyboardShortcuts.onKeyDown(for: .openScreenshotsTab) { [weak self] in
+            self?.statusBar?.toggleScreenshotsSection()
         }
 
         CustomizeVM.shared.allSwitches.forEach{ item in

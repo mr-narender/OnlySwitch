@@ -1,3 +1,4 @@
+import AppKit
 import ComposableArchitecture
 import SwiftUI
 import SystemMonitor
@@ -14,8 +15,9 @@ enum SectionBar {
         case aphrodite
         case xcodeCleaner
         case appUninstaller
+        case screenshots
 
-        var allowsOutsideClickDismissal: Bool { self != .appUninstaller }
+        var allowsOutsideClickDismissal: Bool { self != .appUninstaller && self != .screenshots }
 
         var title: String {
             switch self {
@@ -28,6 +30,7 @@ enum SectionBar {
             case .aphrodite: "Aphrodite".localized()
             case .xcodeCleaner: "Xcode Cleaner".localized()
             case .appUninstaller: "App Uninstaller".localized()
+            case .screenshots: "Screenshots".localized()
             }
         }
 
@@ -42,6 +45,7 @@ enum SectionBar {
             case .aphrodite: "sparkles.rectangle.stack"
             case .xcodeCleaner: "hammer.fill"
             case .appUninstaller: "trash.fill"
+            case .screenshots: "photo.on.rectangle.angled"
             }
         }
 
@@ -50,7 +54,7 @@ enum SectionBar {
             switch self {
             case .codexUsage: "openai_logo"
             case .claudeUsage: "claude_logo"
-            case .controls, .authenticator, .soundMixer, .systemMonitor, .aphrodite, .xcodeCleaner, .appUninstaller: nil
+            case .controls, .authenticator, .soundMixer, .systemMonitor, .aphrodite, .xcodeCleaner, .appUninstaller, .screenshots: nil
             }
         }
     }
@@ -63,7 +67,8 @@ enum SectionBar {
         claudeUsage: Bool = false,
         aphrodite: Bool = false,
         xcodeCleaner: Bool = false,
-        appUninstaller: Bool = false
+        appUninstaller: Bool = false,
+        screenshots: Bool = false
     ) -> [Section] {
         var sections: [Section] = [.controls]
         if authenticator { sections.append(.authenticator) }
@@ -74,11 +79,32 @@ enum SectionBar {
         if aphrodite { sections.append(.aphrodite) }
         if xcodeCleaner { sections.append(.xcodeCleaner) }
         if appUninstaller { sections.append(.appUninstaller) }
+        if screenshots { sections.append(.screenshots) }
         return sections
     }
 
     static func shouldShowBar(for sections: [Section]) -> Bool {
         sections.count > 1
+    }
+
+    /// Single-column list fits at most this many tabs; more scroll horizontally.
+    static let singleColumnVisibleSegmentLimit = 5
+
+    /// Number of equal-width segments that fit in the bar; fewer than `sectionCount` means the bar scrolls.
+    static func visibleSegmentCount(for sectionCount: Int, limit: Int?) -> Int {
+        let count = max(1, sectionCount)
+        guard let limit else { return count }
+        return min(count, max(1, limit))
+    }
+
+    /// Points scrolled per line for wheels that report line-based (imprecise) deltas.
+    static let wheelLineScrollDistance: CGFloat = 10
+
+    /// Horizontal content offset change for a wheel event over a scrolling bar, or `nil` to leave the event
+    /// alone. Mostly vertical movement scrolls the bar sideways; horizontal swipes keep their native handling.
+    static func horizontalScrollDelta(deltaX: CGFloat, deltaY: CGFloat, hasPreciseDeltas: Bool) -> CGFloat? {
+        guard deltaY != 0, abs(deltaY) > abs(deltaX) else { return nil }
+        return hasPreciseDeltas ? deltaY : deltaY * wheelLineScrollDistance
     }
 }
 
@@ -135,28 +161,34 @@ struct SystemMonitorSectionBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let sections: [SectionBar.Section]
     @Binding var selection: SectionBar.Section
+    /// Maximum segments shown at once; when there are more sections the bar scrolls horizontally. `nil` fits all.
+    var visibleSegmentLimit: Int? = nil
+
+    private let spacing: CGFloat = 4
 
     var body: some View {
         GeometryReader { proxy in
-            let spacing: CGFloat = 4
-            let spacingWidth = spacing * CGFloat(max(0, sections.count - 1))
-            let segmentWidth = max(0, (proxy.size.width - spacingWidth) / CGFloat(max(1, sections.count)))
-            let selectedIndex = sections.firstIndex(of: selection) ?? 0
+            let visibleCount = SectionBar.visibleSegmentCount(for: sections.count, limit: visibleSegmentLimit)
+            let spacingWidth = spacing * CGFloat(visibleCount - 1)
+            let segmentWidth = max(0, (proxy.size.width - spacingWidth) / CGFloat(visibleCount))
 
-            ZStack(alignment: .leading) {
-                selectionIndicator
-                    .frame(width: segmentWidth, height: 30)
-                    .offset(x: CGFloat(selectedIndex) * (segmentWidth + spacing))
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
-
-                HStack(spacing: spacing) {
-                    ForEach(sections, id: \.self) { section in
-                        sectionButton(section)
+            if visibleCount < sections.count {
+                ScrollViewReader { reader in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        segments(segmentWidth: segmentWidth)
+                            .background(VerticalWheelHorizontalScroller())
+                    }
+                    .clipShape(Capsule())
+                    .onAppear { reader.scrollTo(selection, anchor: .center) }
+                    .onChange(of: selection) { _, newSelection in
+                        withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) {
+                            reader.scrollTo(newSelection, anchor: .center)
+                        }
                     }
                 }
+            } else {
+                segments(segmentWidth: segmentWidth)
             }
-            .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: selection)
         }
         .frame(height: 30)
         .padding(3)
@@ -168,6 +200,26 @@ struct SystemMonitorSectionBar: View {
         .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
         .padding(.horizontal, 15)
         .accessibilityElement(children: .contain)
+    }
+
+    private func segments(segmentWidth: CGFloat) -> some View {
+        let selectedIndex = sections.firstIndex(of: selection) ?? 0
+        return ZStack(alignment: .leading) {
+            selectionIndicator
+                .frame(width: segmentWidth, height: 30)
+                .offset(x: CGFloat(selectedIndex) * (segmentWidth + spacing))
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+
+            HStack(spacing: spacing) {
+                ForEach(sections, id: \.self) { section in
+                    sectionButton(section)
+                        .frame(width: segmentWidth)
+                        .id(section)
+                }
+            }
+        }
+        .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: selection)
     }
 
     private func sectionButton(_ section: SectionBar.Section) -> some View {
@@ -204,6 +256,54 @@ struct SystemMonitorSectionBar: View {
                     Capsule()
                         .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
                 }
+        }
+    }
+}
+
+/// Lets a mouse wheel's vertical movement scroll the enclosing horizontal `ScrollView` of the section bar.
+private struct VerticalWheelHorizontalScroller: NSViewRepresentable {
+    func makeNSView(context: Context) -> MonitorView { MonitorView() }
+    func updateNSView(_ nsView: MonitorView, context: Context) {}
+
+    final class MonitorView: NSView {
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let monitor {
+                NSEvent.removeMonitor(monitor)
+                self.monitor = nil
+            }
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                // Local monitors run synchronously on the main thread, so the event never leaves it.
+                nonisolated(unsafe) let event = event
+                let consumed = MainActor.assumeIsolated { self?.scrollHorizontally(for: event) ?? false }
+                return consumed ? nil : event
+            }
+        }
+
+        /// Returns `true` when the event was turned into horizontal scrolling and should be consumed.
+        private func scrollHorizontally(for event: NSEvent) -> Bool {
+            guard event.window === window,
+                  let scrollView = enclosingScrollView,
+                  let documentView = scrollView.documentView,
+                  scrollView.bounds.contains(scrollView.convert(event.locationInWindow, from: nil)),
+                  let delta = SectionBar.horizontalScrollDelta(
+                      deltaX: event.scrollingDeltaX,
+                      deltaY: event.scrollingDeltaY,
+                      hasPreciseDeltas: event.hasPreciseScrollingDeltas
+                  ) else { return false }
+
+            let clipView = scrollView.contentView
+            let maxX = max(0, documentView.frame.width - clipView.bounds.width)
+            var origin = clipView.bounds.origin
+            origin.x = min(max(0, origin.x - delta), maxX)
+            clipView.scroll(to: origin)
+            scrollView.reflectScrolledClipView(clipView)
+            return true
         }
     }
 }

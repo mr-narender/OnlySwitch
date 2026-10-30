@@ -12,14 +12,16 @@ import Utilities
 import OnlyAgent
 import XcodeCleaner
 import AppUninstaller
+import ComposableArchitecture
+import Screenshots
 import Tailscale
 import Extensions
+import KeyboardShortcuts
 
 struct SettingsView: View {
     @StateObject var settingVM = SettingsVM.shared
     @ObservedObject var langManager = LanguageManager.sharedManager
-    @AppStorage(UserDefaults.Key.showXcodeCleanerTab) private var showXcodeCleanerTab = true
-    @AppStorage(UserDefaults.Key.showAppUninstallerTab) private var showAppUninstallerTab = true
+    @Environment(\.colorScheme) private var colorScheme
 
     init(settingItem: Binding<SettingsItem?> = .constant(nil)) {
         if let item = settingItem.wrappedValue {
@@ -90,28 +92,33 @@ struct SettingsView: View {
                 AuthenticatorSettingsView()
 
             case .XcodeCleaner:
-                VStack(spacing: 0) {
-                    Toggle("Xcode Cleaner Show Tab".localized(), isOn: $showXcodeCleanerTab)
-                        .toggleStyle(.switch)
-                        .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 6)
-                        .onChange(of: showXcodeCleanerTab) { _ in
-                            NotificationCenter.default.post(name: .changeSettings, object: nil)
-                        }
-                    XcodeCleanerView(store: settingVM.xcodeCleanerStore)
+                ScrollView {
+                    XcodeCleanerView(store: settingVM.xcodeCleanerStore, managesScrolling: false)
                         .id(langManager.currentLang)
                 }
+                .background(.background)
 
             case .AppUninstaller:
-                VStack(spacing: 0) {
-                    Toggle("App Uninstaller Show Tab".localized(), isOn: $showAppUninstallerTab)
-                        .toggleStyle(.switch)
-                        .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 6)
-                        .onChange(of: showAppUninstallerTab) { _ in
-                            NotificationCenter.default.post(name: .changeSettings, object: nil)
-                        }
-                    AppUninstallerView(store: settingVM.appUninstallerStore)
+                ScrollView {
+                    AppUninstallerView(store: settingVM.appUninstallerStore, managesScrolling: false)
                         .id(langManager.currentLang)
                 }
+                .background(.background)
+
+            case .Screenshots:
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ScreenshotsSettingsControls(store: settingVM.screenshotsStore, folderPath: settingVM.screenshotsFolderURL.path)
+                            .padding(.horizontal, 24)
+                            .padding(.top, 20)
+                            .frame(maxWidth: 900)
+                            .frame(maxWidth: .infinity)
+                            .tint(colorScheme == .dark ? .mint : .accentColor)
+                        ScreenshotsView(store: settingVM.screenshotsStore, resolvesFlightTarget: false)
+                            .id(langManager.currentLang)
+                    }
+                }
+                .background(.background)
 
             case .Tailscale:
                 TailscaleSettingsView(store: settingVM.tailscaleStore)
@@ -137,6 +144,9 @@ struct SettingsView: View {
 
             case .Customize:
                 CustomizeView()
+
+            case .Tabs:
+                TabVisibilitySettingsView()
 
             case .HideMenubarIcons:
                 HideMenubarIconsSettingView()
@@ -192,6 +202,61 @@ struct SettingsView: View {
         }
     }
 
+}
+
+/// The tab shortcut (disabled while the tab is hidden on the Tabs page), the opt-in system screenshot takeover
+/// and the collection folder. Toggling collection is a `ScreenshotsFeature` action; the view only reflects `captureStatus`.
+private struct ScreenshotsSettingsControls: View {
+    let store: StoreOf<ScreenshotsFeature>
+    let folderPath: String
+    @AppStorage(UserDefaults.Key.showScreenshotsTab) private var showScreenshotsTab = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Open Screenshots Tab".localized())
+                Spacer(minLength: 12)
+                KeyboardShortcuts.Recorder(for: .openScreenshotsTab)
+                    .accessibilityLabel(Text("Open Screenshots Tab".localized()))
+            }
+            .padding(12)
+            .disabled(!showScreenshotsTab)
+            Divider().padding(.horizontal, 12)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Collect System Screenshots".localized())
+                    Spacer(minLength: 12)
+                    Toggle("Collect System Screenshots".localized(), isOn: Binding(get: { store.captureStatus != .disabled }, set: setCollecting))
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                }
+                Text("Screenshots Capture Explanation".localized())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            Divider().padding(.horizontal, 12)
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Screenshots Folder".localized())
+                    Text(folderPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .textSelection(.enabled)
+                }
+                Spacer(minLength: 12)
+                Button("Show in Finder".localized(), action: revealFolder)
+            }
+            .padding(12)
+        }
+        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
+    }
+
+    private func setCollecting(_ isOn: Bool) { store.send(.captureToggleChanged(isOn)) }
+    private func revealFolder() { store.send(.revealFolderTapped) }
 }
 
 #if DEBUG
