@@ -21,59 +21,60 @@ struct RemoteAppView: View {
                             DashboardBackground()
                         }
 
-                        if store.selectedPage == .aphrodite, store.plusAccess.canAccess, store.aphrodite.selectedApp != nil {
-                            RemoteAphroditeView(store: store.scope(state: \.aphrodite, action: \.aphrodite))
+                        TabView(selection: pageSelection) {
+                            DashboardView(store: store.scope(state: \.dashboard, action: \.dashboard))
                                 .ignoresSafeArea(edges: .bottom)
-                        } else {
-                            TabView(selection: pageSelection) {
-                                DashboardView(store: store.scope(state: \.dashboard, action: \.dashboard))
+                                .tag(RemoteAppPage.controls)
+                            if store.tabConfiguration.showsSystemMonitor {
+                                RemoteSystemMonitorView(store: store.scope(state: \.systemMonitor, action: \.systemMonitor))
                                     .ignoresSafeArea(edges: .bottom)
-                                    .tag(RemoteAppPage.controls)
-                                if store.tabConfiguration.showsSystemMonitor {
-                                    RemoteSystemMonitorView(store: store.scope(state: \.systemMonitor, action: \.systemMonitor))
-                                        .ignoresSafeArea(edges: .bottom)
-                                        .tag(RemoteAppPage.systemMonitor)
-                                }
-                                if store.tabConfiguration.showsSoundMixer {
-                                    RemotePlusGateView(accessStore: plusAccessStore) {
-                                        RemoteSoundMixerView(store: store.scope(state: \.soundMixer, action: \.soundMixer))
-                                    }
-                                        .ignoresSafeArea(edges: .bottom)
-                                        .tag(RemoteAppPage.soundMixer)
-                                }
-                                if store.tabConfiguration.showsBrightness {
-                                    RemotePlusGateView(accessStore: plusAccessStore) {
-                                        RemoteBrightnessView(store: store.scope(state: \.brightness, action: \.brightness))
-                                    }
-                                        .ignoresSafeArea(edges: .bottom)
-                                        .tag(RemoteAppPage.brightness)
-                                }
-                                if store.tabConfiguration.showsCodexUsage {
-                                    RemoteCodexUsageView(store: store.scope(state: \.codexUsage, action: \.codexUsage))
-                                        .ignoresSafeArea(edges: .bottom)
-                                        .tag(RemoteAppPage.codexUsage)
-                                }
-                                if store.tabConfiguration.showsClaudeUsage {
-                                    RemoteClaudeUsageView(store: store.scope(state: \.claudeUsage, action: \.claudeUsage))
-                                        .ignoresSafeArea(edges: .bottom)
-                                        .tag(RemoteAppPage.claudeUsage)
-                                }
-                                if store.tabConfiguration.showsAphrodite {
-                                    RemotePlusGateView(accessStore: plusAccessStore) {
-                                        RemoteAphroditeView(store: store.scope(state: \.aphrodite, action: \.aphrodite))
-                                    }
-                                        .ignoresSafeArea(edges: .bottom)
-                                        .tag(RemoteAppPage.aphrodite)
-                                }
+                                    .tag(RemoteAppPage.systemMonitor)
                             }
-                            .tabViewStyle(.page(indexDisplayMode: .never))
-                            .ignoresSafeArea(edges: .bottom)
+                            if store.tabConfiguration.showsSoundMixer {
+                                RemotePlusGateView(accessStore: plusAccessStore) {
+                                    RemoteSoundMixerView(store: store.scope(state: \.soundMixer, action: \.soundMixer))
+                                }
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.soundMixer)
+                            }
+                            if store.tabConfiguration.showsBrightness {
+                                RemotePlusGateView(accessStore: plusAccessStore) {
+                                    RemoteBrightnessView(store: store.scope(state: \.brightness, action: \.brightness))
+                                }
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.brightness)
+                            }
+                            if store.tabConfiguration.showsCodexUsage {
+                                RemoteCodexUsageView(store: store.scope(state: \.codexUsage, action: \.codexUsage))
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.codexUsage)
+                            }
+                            if store.tabConfiguration.showsClaudeUsage {
+                                RemoteClaudeUsageView(store: store.scope(state: \.claudeUsage, action: \.claudeUsage))
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.claudeUsage)
+                            }
+                            if store.tabConfiguration.showsAphrodite {
+                                RemotePlusGateView(accessStore: plusAccessStore) {
+                                    RemoteAphroditeView(store: store.scope(state: \.aphrodite, action: \.aphrodite))
+                                }
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.aphrodite)
+                            }
                         }
+                        .tabViewStyle(.page(indexDisplayMode: .never))
+                        .ignoresSafeArea(edges: .bottom)
 
                         RemotePageTabBar(selection: pageSelection, configuration: store.tabConfiguration)
                             .padding(.bottom, 4)
                     }
                         .toolbarBackground(.hidden, for: .navigationBar)
+                        .navigationDestination(isPresented: aphroditeAppPresented) {
+                            if let app = store.aphrodite.selectedApp {
+                                RemoteAphroditeAppView(app: app)
+                                    .background { DashboardBackground() }
+                            }
+                        }
                         .overlay {
                             if store.isLoading {
                                 ProgressView("Loading Macs")
@@ -179,6 +180,13 @@ struct RemoteAppView: View {
 
     private var plusAccessStore: StoreOf<RemotePlusAccessFeature> {
         store.scope(state: \.plusAccess, action: \.plusAccess)
+    }
+
+    private var aphroditeAppPresented: Binding<Bool> {
+        Binding(
+            get: { store.selectedPage == .aphrodite && store.plusAccess.canAccess && store.aphrodite.selectedApp != nil },
+            set: { if !$0 { store.send(.aphrodite(.selectApp(nil))) } }
+        )
     }
 
     private var pageSelection: Binding<RemoteAppPage> {
