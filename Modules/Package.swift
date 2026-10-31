@@ -12,10 +12,12 @@ let package = Package(
     products: [
         .library(name: "SoundMixerEQ", targets: ["SoundMixerEQ"]),
         .library(name: "DisplayDDC", targets: ["DisplayDDC"]),
+        .library(name: "DisplayBrightness", targets: ["DisplayBrightness"]),
         .library(name: "Tailscale", targets: ["Tailscale"]),
         .library(name: "XcodeCleaner", targets: ["XcodeCleaner"]),
         .library(name: "AppUninstaller", targets: ["AppUninstaller"]),
         .library(name: "Screenshots", targets: ["Screenshots"]),
+        .library(name: "RadioBrowser", targets: ["RadioBrowser"]),
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "Extensions",
@@ -100,6 +102,8 @@ let package = Package(
         .target(name: "CSoundMixerEQ"),
         .target(name: "SoundMixerEQ", dependencies: ["CSoundMixerEQ", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
         .target(name: "DisplayDDC"),
+        .target(name: "DisplayBrightness", dependencies: ["Extensions", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
+        .testTarget(name: "DisplayBrightnessTests", dependencies: ["DisplayBrightness", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .testTarget(name: "DisplayDDCTests", dependencies: ["DisplayDDC"]),
         .testTarget(name: "SoundMixerEQTests", dependencies: ["SoundMixerEQ", "CSoundMixerEQ", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .target(name: "Tailscale", dependencies: ["Extensions", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
@@ -108,6 +112,8 @@ let package = Package(
         .testTarget(name: "AppUninstallerTests", dependencies: ["AppUninstaller", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .target(name: "Screenshots", dependencies: ["Extensions", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
         .testTarget(name: "ScreenshotsTests", dependencies: ["Screenshots", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
+        .target(name: "RadioBrowser", dependencies: ["Extensions", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
+        .testTarget(name: "RadioBrowserTests", dependencies: ["RadioBrowser", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .target(name: "XcodeCleaner", dependencies: ["Extensions", .product(name: "Dependencies", package: "swift-dependencies"), .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .testTarget(name: "XcodeCleanerTests", dependencies: ["XcodeCleaner", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .target(
@@ -215,7 +221,10 @@ let package = Package(
         ),
         .target(
             name: "DesktopPet",
-            dependencies: [.product(name: "ComposableArchitecture", package: "swift-composable-architecture")]
+            dependencies: [
+                "Design",
+                .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
+            ]
         ),
         .target(
             name: "RemoteCore"
