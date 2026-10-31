@@ -19,7 +19,7 @@ struct StickerCollapsedTitle: View {
             WindowDragView(onDoubleClick: doubleTapAction)
 
             if isCollapsed {
-                Text(Self.firstLine(in: content))
+                Text(StickerChecklist.title(from: content))
                     .font(.system(size: 12))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -30,9 +30,5 @@ struct StickerCollapsedTitle: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20)
-    }
-
-    static func firstLine(in content: String) -> String {
-        content.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
     }
 }

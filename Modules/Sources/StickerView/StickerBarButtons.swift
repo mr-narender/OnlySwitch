@@ -25,6 +25,18 @@ struct StickerBarButtons: View {
                 .help(store.previewMode ? "Edit".localized() : "Preview".localized())
                 .opacity(store.collaspeMode ? 0 : 1)
 
+                Button(action: toggleChecklist) {
+                    Image(systemName: "checklist")
+                        .foregroundStyle(strokeColor)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Checklist".localized() + " (⇧⌘L)")
+                .accessibilityLabel("Checklist".localized())
+                .opacity(store.collaspeMode || store.previewMode ? 0 : 1)
+                .disabled(store.collaspeMode || store.previewMode)
+
                 Button(action: toggleTranslucent) {
                     Image(store.canTranslucent ? "fill" : "translucent")
                         .foregroundStyle(strokeColor)
@@ -66,6 +78,10 @@ struct StickerBarButtons: View {
 
     private func togglePreviewMode() {
         store.send(.togglePreviewMode, animation: .easeInOut)
+    }
+
+    private func toggleChecklist() {
+        store.send(.toggleChecklist)
     }
 
     private func toggleTranslucent() {

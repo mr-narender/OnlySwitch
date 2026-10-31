@@ -254,6 +254,7 @@ let package = Package(
                 "RemoteCore",
                 "RemoteTransport",
                 "SystemMonitor",
+                "StickerView",
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ]
         )
