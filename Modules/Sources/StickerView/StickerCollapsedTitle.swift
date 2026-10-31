@@ -5,19 +5,15 @@
 //  Created by OpenAI on 2026/7/5.
 //
 
-import Extensions
 import SwiftUI
 
 struct StickerCollapsedTitle: View {
     let content: String
     let isCollapsed: Bool
     let strokeColor: Color
-    let doubleTapAction: () -> Void
 
     var body: some View {
         ZStack {
-            WindowDragView(onDoubleClick: doubleTapAction)
-
             if isCollapsed {
                 Text(StickerChecklist.title(from: content))
                     .font(.system(size: 12))
