@@ -145,6 +145,18 @@ public enum RemoteMessage: Codable, Equatable, Sendable {
     case soundMixerCommand(RemoteSoundMixerCommand)
     case systemMonitorSubscriptionUpdate(Bool)
     case systemMonitorSnapshot(SystemMonitorSnapshot)
+    case soundMixerSubscriptionUpdate(Bool)
+    case brightnessSubscriptionUpdate(Bool)
+    case brightnessSnapshot(RemoteBrightnessSnapshot)
+    case brightnessCommand(RemoteBrightnessCommand)
+    case codexUsageRequest(RemoteCodexUsageRequest)
+    case codexUsageResult(RemoteCodexUsageResult)
+    case claudeUsageRequest(RemoteClaudeUsageRequest)
+    case claudeUsageResult(RemoteClaudeUsageResult)
+    case aphroditeLibraryRequest
+    case aphroditeLibraryManifest(AphroditeRemoteLibraryManifest)
+    case aphroditeDocumentChunk(AphroditeRemoteDocumentChunk)
+    case aphroditeTransferComplete(UUID)
     case ping(UInt64)
     case pong(UInt64)
     case credentialRevoked
@@ -187,6 +199,18 @@ public enum RemoteMessage: Codable, Equatable, Sendable {
         case soundMixerCommand
         case systemMonitorSubscriptionUpdate
         case systemMonitorSnapshot
+        case soundMixerSubscriptionUpdate
+        case brightnessSubscriptionUpdate
+        case brightnessSnapshot
+        case brightnessCommand
+        case codexUsageRequest
+        case codexUsageResult
+        case claudeUsageRequest
+        case claudeUsageResult
+        case aphroditeLibraryRequest
+        case aphroditeLibraryManifest
+        case aphroditeDocumentChunk
+        case aphroditeTransferComplete
         case ping
         case pong
         case credentialRevoked
@@ -252,6 +276,30 @@ public enum RemoteMessage: Codable, Equatable, Sendable {
             self = .systemMonitorSubscriptionUpdate(try container.decode(Bool.self, forKey: .payload))
         case .systemMonitorSnapshot:
             self = .systemMonitorSnapshot(try container.decode(SystemMonitorSnapshot.self, forKey: .payload))
+        case .soundMixerSubscriptionUpdate:
+            self = .soundMixerSubscriptionUpdate(try container.decode(Bool.self, forKey: .payload))
+        case .brightnessSubscriptionUpdate:
+            self = .brightnessSubscriptionUpdate(try container.decode(Bool.self, forKey: .payload))
+        case .brightnessSnapshot:
+            self = .brightnessSnapshot(try container.decode(RemoteBrightnessSnapshot.self, forKey: .payload))
+        case .brightnessCommand:
+            self = .brightnessCommand(try container.decode(RemoteBrightnessCommand.self, forKey: .payload))
+        case .codexUsageRequest:
+            self = .codexUsageRequest(try container.decode(RemoteCodexUsageRequest.self, forKey: .payload))
+        case .codexUsageResult:
+            self = .codexUsageResult(try container.decode(RemoteCodexUsageResult.self, forKey: .payload))
+        case .claudeUsageRequest:
+            self = .claudeUsageRequest(try container.decode(RemoteClaudeUsageRequest.self, forKey: .payload))
+        case .claudeUsageResult:
+            self = .claudeUsageResult(try container.decode(RemoteClaudeUsageResult.self, forKey: .payload))
+        case .aphroditeLibraryRequest:
+            self = .aphroditeLibraryRequest
+        case .aphroditeLibraryManifest:
+            self = .aphroditeLibraryManifest(try container.decode(AphroditeRemoteLibraryManifest.self, forKey: .payload))
+        case .aphroditeDocumentChunk:
+            self = .aphroditeDocumentChunk(try container.decode(AphroditeRemoteDocumentChunk.self, forKey: .payload))
+        case .aphroditeTransferComplete:
+            self = .aphroditeTransferComplete(try container.decode(UUID.self, forKey: .payload))
         case .ping:
             self = .ping(try container.decode(UInt64.self, forKey: .payload))
         case .pong:
@@ -344,6 +392,41 @@ public enum RemoteMessage: Codable, Equatable, Sendable {
         case let .systemMonitorSnapshot(snapshot):
             try container.encode(Kind.systemMonitorSnapshot, forKey: .type)
             try container.encode(snapshot, forKey: .payload)
+        case let .soundMixerSubscriptionUpdate(enabled):
+            try container.encode(Kind.soundMixerSubscriptionUpdate, forKey: .type)
+            try container.encode(enabled, forKey: .payload)
+        case let .brightnessSubscriptionUpdate(enabled):
+            try container.encode(Kind.brightnessSubscriptionUpdate, forKey: .type)
+            try container.encode(enabled, forKey: .payload)
+        case let .brightnessSnapshot(snapshot):
+            try container.encode(Kind.brightnessSnapshot, forKey: .type)
+            try container.encode(snapshot, forKey: .payload)
+        case let .brightnessCommand(command):
+            try container.encode(Kind.brightnessCommand, forKey: .type)
+            try container.encode(command, forKey: .payload)
+        case let .codexUsageRequest(request):
+            try container.encode(Kind.codexUsageRequest, forKey: .type)
+            try container.encode(request, forKey: .payload)
+        case let .codexUsageResult(result):
+            try container.encode(Kind.codexUsageResult, forKey: .type)
+            try container.encode(result, forKey: .payload)
+        case let .claudeUsageRequest(request):
+            try container.encode(Kind.claudeUsageRequest, forKey: .type)
+            try container.encode(request, forKey: .payload)
+        case let .claudeUsageResult(result):
+            try container.encode(Kind.claudeUsageResult, forKey: .type)
+            try container.encode(result, forKey: .payload)
+        case .aphroditeLibraryRequest:
+            try container.encode(Kind.aphroditeLibraryRequest, forKey: .type)
+        case let .aphroditeLibraryManifest(manifest):
+            try container.encode(Kind.aphroditeLibraryManifest, forKey: .type)
+            try container.encode(manifest, forKey: .payload)
+        case let .aphroditeDocumentChunk(chunk):
+            try container.encode(Kind.aphroditeDocumentChunk, forKey: .type)
+            try container.encode(chunk, forKey: .payload)
+        case let .aphroditeTransferComplete(transferID):
+            try container.encode(Kind.aphroditeTransferComplete, forKey: .type)
+            try container.encode(transferID, forKey: .payload)
         case let .ping(nonce):
             try container.encode(Kind.ping, forKey: .type)
             try container.encode(nonce, forKey: .payload)

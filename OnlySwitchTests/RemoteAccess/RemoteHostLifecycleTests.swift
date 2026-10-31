@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import RemoteCore
+import Security
 import Testing
 @testable import OnlySwitch
 
@@ -401,6 +402,35 @@ struct RemoteHostStartFailureTests {
     }
 
     @Test(.timeLimit(.minutes(1)))
+    func credentialRecoveryFailurePublishesFailureWithoutAdvertising() async {
+        let router = await MainActor.run { RemoteCommandRouter(resolveBuiltIn: { _ in nil }) }
+        let host = RemoteHost.testing(
+            catalog: [],
+            router: router,
+            pairingCode: "123456",
+            credentialStore: .inMemory(beforeTransactionRecovery: {
+                throw RemoteCredentialStore.Error.keychain(errSecAuthFailed)
+            }),
+            listenerFactory: { _ in throw StartTestError.listener }
+        )
+        var events = await host.events().makeAsyncIterator()
+
+        // The recovery error, not StartTestError.listener, proves no listener was created.
+        await #expect(throws: RemoteCredentialStore.Error.keychain(errSecAuthFailed)) {
+            try await host.start(configuration: .init(displayName: "Test"))
+        }
+
+        var failure: HostStatus?
+        while let event = await events.next() {
+            if case let .statusChanged(status) = event, case .failed = status {
+                failure = status
+                break
+            }
+        }
+        #expect(failure == .failed("Remote access could not start"))
+    }
+
+    @Test(.timeLimit(.minutes(1)))
     func listenerCreationFailureCleansLifecycleAndPublishesFailure() async {
         let router = await MainActor.run { RemoteCommandRouter(resolveBuiltIn: { _ in nil }) }
         let host = RemoteHost.testing(
@@ -524,7 +554,7 @@ struct RemoteCatalogMonitorTests {
         let coalesced = CoalescedRefreshProbe()
         let monitor = RemoteCatalogMonitor(
             provider: await provider.provider,
-            pollInterval: .hours(1),
+            pollInterval: .seconds(3_600),
             debounceInterval: .zero,
             pollWait: { try await Task.sleep(for: $0) },
             refreshCoalescedObserver: { coalesced.record() }
@@ -667,10 +697,10 @@ struct RemoteCatalogMonitorTests {
         let started = TestSignal()
         let monitor = RemoteCatalogMonitor(
             provider: await source.provider,
-            debounceInterval: .hours(1),
+            debounceInterval: .seconds(3_600),
             pollWait: { _ in
                 await started.signal()
-                try await Task.sleep(for: .hours(1))
+                try await Task.sleep(for: .seconds(3_600))
             }
         )
         _ = try await monitor.current()
@@ -1092,7 +1122,7 @@ private extension RemoteControlDescriptor {
     static var muteDescriptor: Self { descriptor(kind: .builtIn, value: "mute") }
     static var hideDesktopDescriptor: Self { descriptor(kind: .builtIn, value: "hideDesktop") }
 
-    private static func descriptor(kind: RemoteControlKind, value: String) -> Self {
+    private static func descriptor(kind: RemoteControlID.Kind, value: String) -> Self {
         .init(
             id: .init(kind: kind, value: value),
             title: value,

@@ -1,3 +1,4 @@
+import Defines
 import SwiftUI
 import SystemMonitor
 
@@ -13,6 +14,13 @@ final class SystemMonitorSettingsViewModel: ObservableObject {
         Binding(
             get: { self.preferences.enabledPanelMetrics.contains(metric) },
             set: { self.setPanelMetric(metric, isEnabled: $0) }
+        )
+    }
+
+    var compactModeBinding: Binding<Bool> {
+        Binding(
+            get: { self.preferences.isCompactMode },
+            set: { value in self.updatePreferences { $0.isCompactMode = value } }
         )
     }
 

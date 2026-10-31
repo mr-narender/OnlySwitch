@@ -16,6 +16,8 @@ class SpotifyPlayer{
         spotifyApp.isRunning ?? false
     }
     weak var delegate:MusicPlayerDelegate?
+    /// Track from the last playback notification, readable without Automation permission.
+    private(set) var notifiedTrack: (name: String?, artist: String?)?
     
     required init?(){
         guard let player = SBApplication(bundleIdentifier: "com.spotify.client") else {return nil}
@@ -39,6 +41,9 @@ class SpotifyPlayer{
         guard let userInfo = notification.userInfo,
               let playerState = userInfo["Player State"] as? String
         else { return }
+        notifiedTrack = playerState == "Stopped"
+            ? nil
+            : (userInfo["Name"] as? String, userInfo["Artist"] as? String)
         
         switch playerState {
         case "Paused":
@@ -75,6 +80,13 @@ extension SpotifyPlayer:MusicPlayer {
         return true
     }
     
+    @MainActor
+    func nextTrack() {
+        // Paused players can skip too, and the playing state can lag behind a background player.
+        guard isRunning else { return }
+        spotifyApp.nextTrack?()
+    }
+
     func pause() -> Bool {
         guard isRunning else { return false}
         spotifyApp.pause?()

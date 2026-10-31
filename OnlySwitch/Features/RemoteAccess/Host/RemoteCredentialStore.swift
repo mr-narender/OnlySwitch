@@ -1,4 +1,5 @@
 import Foundation
+import os
 import RemoteCore
 import RemoteTransport
 import Security
@@ -68,6 +69,7 @@ actor RemoteCredentialStore {
     private let backend: Backend
     private let finalizeRepairObserver: @Sendable (UUID) -> Void
     private let beforeRevocationDelete: @Sendable () throws -> Void
+    private let beforeTransactionRecovery: @Sendable () throws -> Void
     private var records: [UUID: PairedRemoteDevice] = [:]
     private var revocationVerifiers: [UUID: Data] = [:]
     private var preparedReplacements: [UUID: PreparedReplacement] = [:]
@@ -77,6 +79,7 @@ actor RemoteCredentialStore {
         backend: Backend,
         finalizeRepairObserver: @escaping @Sendable (UUID) -> Void = { _ in },
         beforeRevocationDelete: @escaping @Sendable () throws -> Void = {},
+        beforeTransactionRecovery: @escaping @Sendable () throws -> Void = {},
         records: [UUID: PairedRemoteDevice] = [:],
         revocationVerifiers: [UUID: Data] = [:],
         preparedReplacements: [UUID: PreparedReplacement] = [:]
@@ -84,6 +87,7 @@ actor RemoteCredentialStore {
         self.backend = backend
         self.finalizeRepairObserver = finalizeRepairObserver
         self.beforeRevocationDelete = beforeRevocationDelete
+        self.beforeTransactionRecovery = beforeTransactionRecovery
         self.records = records
         self.revocationVerifiers = revocationVerifiers
         self.preparedReplacements = preparedReplacements
@@ -95,12 +99,14 @@ actor RemoteCredentialStore {
 
     static func inMemory(
         finalizeRepairObserver: @escaping @Sendable (UUID) -> Void = { _ in },
-        beforeRevocationDelete: @escaping @Sendable () throws -> Void = {}
+        beforeRevocationDelete: @escaping @Sendable () throws -> Void = {},
+        beforeTransactionRecovery: @escaping @Sendable () throws -> Void = {}
     ) -> RemoteCredentialStore {
         RemoteCredentialStore(
             backend: .memory,
             finalizeRepairObserver: finalizeRepairObserver,
-            beforeRevocationDelete: beforeRevocationDelete
+            beforeRevocationDelete: beforeRevocationDelete,
+            beforeTransactionRecovery: beforeTransactionRecovery
         )
     }
 
@@ -271,6 +277,7 @@ actor RemoteCredentialStore {
     }
 
     func recoverExpiredTransactions(now: Date = .now) throws {
+        try beforeTransactionRecovery()
         let transactions = try loadPreparedReplacements()
         for var transaction in transactions.values {
             switch transaction.state {
@@ -586,13 +593,83 @@ actor RemoteCredentialStore {
         RemoteProtocolError(code: .authenticationFailed, message: "Pairing transaction is unavailable")
     }
 
+    // The legacy file-based keychain guards each item with an ACL bound to the creating code
+    // signature, so every rebuild or signing-identity change re-prompts for the login password.
+    // Signed builds carry a keychain access group and can use the Data Protection keychain,
+    // which has no per-item ACL prompts; unsigned builds fall back to the legacy keychain.
+    static let usesDataProtectionKeychain: Bool = {
+        guard let task = SecTaskCreateFromSelf(nil) else { return false }
+        return SecTaskCopyValueForEntitlement(
+            task,
+            "keychain-access-groups" as CFString,
+            nil
+        ) != nil
+    }()
+
+    private static let migratedServices = OSAllocatedUnfairLock(initialState: Set<String>())
+
     private static func baseQuery(service: String, account: String? = nil) -> [CFString: Any] {
+        if usesDataProtectionKeychain { migrateLegacyItemsIfNeeded(service: service) }
+        return keychainQuery(
+            service: service,
+            account: account,
+            usesDataProtectionKeychain: usesDataProtectionKeychain
+        )
+    }
+
+    // Items paired before the Data Protection keychain switch live in the legacy keychain, which
+    // the Data Protection queries cannot see. Move them over once per service and process so
+    // existing pairings and the installation ID survive the upgrade. Items already present in the
+    // Data Protection keychain win, and failures are left in place to be retried on next launch.
+    private static func migrateLegacyItemsIfNeeded(service: String) {
+        migratedServices.withLock { migrated in
+            guard migrated.insert(service).inserted else { return }
+            migrateLegacyItems(service: service)
+        }
+    }
+
+    static func migrateLegacyItems(service: String) {
+        var listQuery = keychainQuery(service: service, usesDataProtectionKeychain: false)
+        listQuery[kSecMatchLimit] = kSecMatchLimitAll
+        listQuery[kSecReturnAttributes] = true
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(listQuery as CFDictionary, &result) == errSecSuccess else { return }
+        let items = (result as? [[CFString: Any]]) ?? (result as? [CFString: Any]).map { [$0] } ?? []
+
+        for account in items.compactMap({ $0[kSecAttrAccount] as? String }) {
+            let legacyQuery = keychainQuery(
+                service: service,
+                account: account,
+                usesDataProtectionKeychain: false
+            )
+            var dataQuery = legacyQuery
+            dataQuery[kSecMatchLimit] = kSecMatchLimitOne
+            dataQuery[kSecReturnData] = true
+            var data: CFTypeRef?
+            guard SecItemCopyMatching(dataQuery as CFDictionary, &data) == errSecSuccess,
+                  let data = data as? Data else { continue }
+
+            var insert = keychainQuery(service: service, account: account, usesDataProtectionKeychain: true)
+            insert[kSecValueData] = data
+            insert[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let addStatus = SecItemAdd(insert as CFDictionary, nil)
+            guard addStatus == errSecSuccess || addStatus == errSecDuplicateItem else { continue }
+            SecItemDelete(legacyQuery as CFDictionary)
+        }
+    }
+
+    static func keychainQuery(
+        service: String,
+        account: String? = nil,
+        usesDataProtectionKeychain: Bool
+    ) -> [CFString: Any] {
         var query: [CFString: Any] = [
             kSecClass: kSecClassGenericPassword,
             kSecAttrService: service,
             kSecAttrSynchronizable: kCFBooleanFalse as Any
         ]
         if let account { query[kSecAttrAccount] = account }
+        query[kSecUseDataProtectionKeychain] = usesDataProtectionKeychain
         return query
     }
 

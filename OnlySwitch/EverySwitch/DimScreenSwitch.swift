@@ -7,6 +7,7 @@
 
 import Foundation
 import Combine
+import Defines
 import Switches
 
 final class DimScreenSwitch: SwitchProvider, @unchecked Sendable {
@@ -47,6 +48,16 @@ final class DimScreenSwitch: SwitchProvider, @unchecked Sendable {
             strongSelf.autoDimScreenTime = Preferences.shared.autoDimScreenTime
         }
 
+        NotificationCenter.default.publisher(for: .init("OnlySwitchManualNativeBrightness"))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in
+                guard let self, let id = note.object as? NSNumber else { return }
+                self.manager.configureDisplays()
+                guard self.manager.primaryDisplayID == id.uint32Value else { return }
+                self.isDimming = false
+                self.timerCounter = 0
+                NotificationCenter.default.post(name: .refreshSingleSwitchStatus, object: self.type)
+            }.store(in: &cancellable)
         setTimer()
     }
 
@@ -102,12 +113,14 @@ final class DimScreenSwitch: SwitchProvider, @unchecked Sendable {
             throw DimScreenError.brightnessTooLow
         }
         manager.setBrightness(level: dimBrightness)
+        NotificationCenter.default.post(name: .builtInDisplayBrightnessDidChange, object: nil)
     }
 
     private func restoreScreen() {
+        guard isDimming else { return }
         manager.configureDisplays()
         manager.setBrightness(level: originalBrightness)
+        NotificationCenter.default.post(name: .builtInDisplayBrightnessDidChange, object: nil)
         isDimming = false
     }
 }
-

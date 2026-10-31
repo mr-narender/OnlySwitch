@@ -16,8 +16,8 @@ import Networking
 import FirebaseCore
 import Extensions
 import DesktopPet
+import UserNotifications
 
-@main
 struct OnlySwitchApp: App {
     let persistenceController = PersistenceController.shared
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -55,7 +55,7 @@ struct OnlySwitchApp: App {
                     if unitType == .builtIn {
                         guard
                             let intID = UInt64(id),
-                            let type = SwitchType(rawValue: intID)
+                            let type = SwitchType(legacyIdentifier: intID)
                         else {
                             return
                         }
@@ -81,7 +81,7 @@ struct OnlySwitchApp: App {
         WindowGroup("Settings".localized()) {
             settings
         }
-        .windowKeepContentSize()
+        .windowResizability(.contentMinSize)
         .handlesExternalEvents(matching: Set(arrayLiteral: "SettingsWindow"))
         .commands{
             CommandMenu("Switches Availability") {
@@ -126,7 +126,7 @@ struct OnlySwitchApp: App {
 
     private var settings: some View {
         SettingsView(settingItem: $settingsItem)
-            .frame(width: Layout.settingWindowWidth, height: Layout.settingWindowHeight)
+            .frame(minWidth: Layout.settingWindowWidth, minHeight: Layout.settingWindowHeight)
             .onDisappear {
                 if #available(macOS 13.3, *) {
                     print("settings window closing")
@@ -169,7 +169,7 @@ protocol DesktopPetPomodoroPresenting: AnyObject {
 extension DesktopPetController: DesktopPetPomodoroPresenting {}
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     var statusBar: StatusBarController?
     var popover = NSPopover()
     let switchVM = SwitchListVM()
@@ -185,17 +185,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var desktopPetPomodoroRefreshTask: Task<Void, Never>?
     private let remoteAccessController = RemoteAccessController()
     private lazy var onlyRemoteCampaignController = OnlyRemoteCampaignWindowController()
+    let dockPreviewController = DockPreviewController()
+    private lazy var dockPreviewPanelController = DockPreviewPanelController(
+        store: dockPreviewController.store,
+        updatePreviewFrame: dockPreviewController.updatePreviewFrame
+    )
     private var isStoppingRemoteAccess = false
     private var didStopRemoteAccess = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        UNUserNotificationCenter.current().delegate = self
         FirebaseApp.configure()
         Task { await remoteAccessController.startIfEnabled() }
         // Migrate API keys from UserDefaults to Keychain if needed
         KeychainMigration.migrateAPIKeysIfNeeded()
+        // Display volume keys must work before the Sound Mixer panel is ever opened.
+        _ = SoundMixerVM.shared
         //for issue #11
         closeWindow()
-        let contentView = OnlySwitchListView()
+        let contentView = OnlySwitchListView(
+            onPanelSizeChange: { [weak self] size in
+                guard let self, self.popover.contentSize != size else { return }
+                self.popover.contentSize = size
+            },
+            onOutsideClickRetentionChanged: { [weak self] retainsOutsideClicks in
+                self?.statusBar?.listPreventsOutsideClickDismissal = retainsOutsideClicks
+            },
+            onSectionSelectionChanged: { [weak self] section in
+                self?.statusBar?.listSelectedSection = section
+            }
+        )
             .environmentObject(switchVM)
         let apperearance = SwitchListAppearance(rawValue: currentAppearance)
 
@@ -203,9 +222,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(rootView: contentView)
 
         statusBar = StatusBarController(popover)
+        // Collect screenshots (and reveal/fly new captures) before any list host has appeared.
+        SettingsVM.shared.screenshotsStore.send(.task)
         setupDesktopPet()
+        setupDockPreview()
 
         SwitchManager.shared.registerSwitchesShouldShow()
+        _ = ReverseScrollDirectionController.shared.currentStatus()
 
         blManager = BluetoothDevicesManager.shared
         RadioStationSwitch.shared.setDefaultRadioStations()
@@ -232,18 +255,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Workaround for issue [#147](https://github.com/jacklandrin/OnlySwitch/issues/147)
         NSApp.setActivationPolicy(.accessory)
 
+        if let error = PersistenceController.shared.loadError {
+            NSAlert(error: error).runModal()
+        }
+
         Task { @MainActor [weak self] in
             await Task.yield()
             self?.onlyRemoteCampaignController.presentIfNeeded()
         }
     }
 
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler(Self.aphroditeForegroundNotificationOptions)
+    }
+
+    nonisolated static let aphroditeForegroundNotificationOptions: UNNotificationPresentationOptions = [.banner, .sound]
+
     func applicationWillTerminate(_ notification: Notification) {
+        DisplayBrightnessService.shared.stop()
+        ReverseScrollDirectionController.shared.suspendForTermination()
+        dockPreviewPanelController.stop()
+        dockPreviewController.stop()
         stopDesktopPetPomodoroRefresh()
         OnlyControlWindow.shared.onVisibilityChanged = nil
         NotificationCenter.default.removeObserver(
             self,
             name: .desktopPetVisibilityChanged,
+            object: nil
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: .dockPreviewVisibilityChanged,
             object: nil
         )
     }
@@ -268,7 +314,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             },
             onClose: {
                 Preferences.shared.showDesktopPet = false
-            }
+            },
+            playbackClient: .appLive
         )
         desktopPetController = controller
         onlyControlWindow.outsideClickExclusionWindowNumbers = [controller.windowNumber]
@@ -288,6 +335,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             name: .desktopPetVisibilityChanged,
             object: nil
         )
+    }
+
+    private func setupDockPreview() {
+        dockPreviewPanelController.start()
+        dockPreviewController.start(isEnabled: Preferences.shared.dockPreviewEnabled)
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(dockPreviewVisibilityDidChange),
+            name: .dockPreviewVisibilityChanged,
+            object: nil
+        )
+    }
+
+    @objc private func dockPreviewVisibilityDidChange() {
+        dockPreviewController.setEnabled(Preferences.shared.dockPreviewEnabled)
+        if let previewSwitch = SwitchManager.shared.getSwitch(of: .dockPreview) {
+            previewSwitch.delegate?.shouldRefreshIfNeed(aSwitch: previewSwitch)
+        }
     }
 
     @objc private func desktopPetVisibilityDidChange() {
@@ -331,6 +396,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         if let desktopPetController {
             applyDesktopPetPomodoroState(nil, to: desktopPetController)
+            desktopPetController.clearPlayback()
         }
     }
 
@@ -340,6 +406,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
               controller.isVisible
         else { return }
 
+        controller.refreshPlayback()
         let state = await PomodoroTimerSwitch.shared.desktopPetState()
 
         guard !Task.isCancelled,
@@ -385,6 +452,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func registerShortcut() {
         KeyboardShortcuts.onKeyDown(for: .invokePopoverShortcutsName) {
             NotificationCenter.default.post(name: .togglePopover, object: nil)
+        }
+
+        KeyboardShortcuts.onKeyDown(for: .openScreenshotsTab) { [weak self] in
+            self?.statusBar?.toggleScreenshotsSection()
         }
 
         CustomizeVM.shared.allSwitches.forEach{ item in

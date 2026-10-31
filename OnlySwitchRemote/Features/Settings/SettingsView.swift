@@ -4,96 +4,26 @@ import SwiftUI
 
 struct SettingsView: View {
     @Bindable var store: StoreOf<SettingsFeature>
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
-            macsSection
-
             if store.selectedMacID != nil {
-                selectedOrderSection
                 layoutSaveErrorSection
-                controlsSection(title: "Built-ins", kind: .builtIn)
-                controlsSection(title: "Shortcuts", kind: .shortcut)
-                controlsSection(title: "Evolutions", kind: .evolution)
+                allControlsSection
             }
         }
         .navigationTitle("Configure Controls")
+        .toolbarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Close", systemImage: "xmark", action: dismiss.callAsFunction)
+                    .labelStyle(.iconOnly)
+                    .accessibilityHint("Dismisses control configuration")
+            }
+        }
         .task { await store.send(.task).finish() }
         .onDisappear { store.send(.foregroundChanged(false)) }
-        .sheet(item: $store.scope(state: \.pairing, action: \.pairing)) { pairingStore in
-            PairingView(store: pairingStore)
-        }
-        .sheet(item: $store.scope(state: \.management, action: \.management)) { managementStore in
-            NavigationStack { MacManagementView(store: managementStore) }
-        }
-    }
-
-    private var macsSection: some View {
-        Section("Macs") {
-            if store.pairedMacs.isEmpty {
-                Text("No paired Macs")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(store.pairedMacs) { mac in
-                    HStack(spacing: 12) {
-                        Button {
-                            store.send(.selectedMacChanged(mac.id))
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: mac.id == store.selectedMacID ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(mac.id == store.selectedMacID ? Color.accentColor : .secondary)
-                                    .accessibilityHidden(true)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(mac.displayName)
-                                        .foregroundStyle(.primary)
-                                    Text(status(for: mac).title)
-                                        .font(.caption)
-                                        .foregroundStyle(mac.requiresPairing ? .red : .secondary)
-                                    if let date = mac.lastConnectedAt {
-                                        Text("Last connected \(date, format: .relative(presentation: .named))")
-                                            .font(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                }
-                                Spacer()
-                            }
-                            .contentShape(.rect)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(Text(mac.id == store.selectedMacID ? "Selected Mac: \(mac.displayName)" : "Select Mac: \(mac.displayName)"))
-
-                        Button("Manage \(mac.displayName)", systemImage: "info.circle") {
-                            store.send(.manageMac(mac.id))
-                        }
-                        .labelStyle(.iconOnly)
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var selectedOrderSection: some View {
-        let ids = store.orderedVisibleSelectedControlIDs
-        Section("On Dashboard") {
-            if ids.isEmpty {
-                Text("Add controls below to show them on your dashboard.")
-                    .foregroundStyle(.secondary)
-            } else {
-                ForEach(ids, id: \.self) { id in
-                    if let descriptor = store.catalog[id: id] {
-                        ControlSelectionRow(
-                            descriptor: descriptor,
-                            isSelected: true,
-                            showsReorderHandle: true,
-                            selectionChanged: { store.send(.toggleControl(descriptor.id, $0)) }
-                        )
-                    }
-                }
-                .onMove { store.send(.move($0, $1)) }
-                .environment(\.editMode, .constant(.active))
-            }
-        }
     }
 
     @ViewBuilder
@@ -109,26 +39,29 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
-    private func controlsSection(title: LocalizedStringKey, kind: RemoteControlID.Kind) -> some View {
-        let controls = store.catalog.filter {
-            $0.id.kind == kind && store.selectedControlIDs.contains($0.id) == false
-        }
-        if controls.isEmpty == false {
-            Section(title) {
-                ForEach(controls) { descriptor in
+    private var allControlsSection: some View {
+        Section("Controls") {
+            ForEach(store.orderedVisibleSelectedControlIDs, id: \.self) { id in
+                if let descriptor = store.catalog[id: id] {
                     ControlSelectionRow(
                         descriptor: descriptor,
-                        isSelected: store.selectedControlIDs.contains(descriptor.id),
-                        showsReorderHandle: false,
+                        isSelected: true,
+                        showsReorderHandle: true,
                         selectionChanged: { store.send(.toggleControl(descriptor.id, $0)) }
                     )
                 }
             }
-        }
-    }
+            .onMove { store.send(.move($0, $1)) }
+            .environment(\.editMode, .constant(.active))
 
-    private func status(for mac: PairedMac) -> MacConnectionStatus {
-        if mac.requiresPairing { return .needsPairing }
-        return store.connectionStatuses[mac.id] ?? .unknown
+            ForEach(store.catalog.filter { store.selectedControlIDs.contains($0.id) == false }) { descriptor in
+                ControlSelectionRow(
+                    descriptor: descriptor,
+                    isSelected: false,
+                    showsReorderHandle: false,
+                    selectionChanged: { store.send(.toggleControl(descriptor.id, $0)) }
+                )
+            }
+        }
     }
 }

@@ -8,6 +8,7 @@
 import AppKit
 import Defines
 import Switches
+import Tailscale
 
 extension SwitchType {
     @MainActor
@@ -93,6 +94,24 @@ extension SwitchType {
             return SoundMixerSwitch.shared
         case .desktopPet:
             return DesktopPetSwitch()
+        case .claudeUsage:
+            return ClaudeUsageSwitch()
+        case .codexUsage:
+            return CodexUsageSwitch()
+        case .reverseScrollDirection:
+            return ReverseScrollDirectionSwitch()
+        case .systemMonitor:
+            return SystemMonitorSwitch()
+        case .xcodeCleaner:
+            return XcodeCleanerSwitch()
+        case .appUninstaller:
+            return AppUninstallerSwitch()
+        case .aphrodite:
+            return AphroditeSwitch()
+        case .dockPreview:
+            return DockPreviewSwitch()
+        case .tailscale:
+            return TailscaleSwitch()
         }
     }
     
@@ -100,6 +119,17 @@ extension SwitchType {
     func doSwitch() {
         Task { @MainActor in
             let switchOperator = getNewSwitchInstance()
+            if self == .tailscale {
+                do {
+                    let isOn = await switchOperator.currentStatus()
+                    try await switchOperator.operateSwitch(isOn: !isOn)
+                } catch {
+                    SettingsVM.shared.selection = .Tailscale
+                    SettingsVM.shared.tailscaleStore.send(.externalFailure(TailscaleError.sanitized(error)))
+                    OpenWindows.Setting.open()
+                }
+                return
+            }
             let controlType = barInfo().controlType
             if controlType == .Switch || controlType == .Player {
                 let status = await switchOperator.currentStatus()

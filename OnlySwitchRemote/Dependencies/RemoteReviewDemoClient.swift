@@ -28,6 +28,10 @@ actor RemoteReviewDemoRuntime {
     private var preparedPairingRecord: PreparedPairingPersistenceRecord?
     private var eventContinuations: [UUID: AsyncStream<RemoteConnectionEvent>.Continuation] = [:]
     private var eventBacklog: [RemoteConnectionEvent] = []
+    private var soundMixerSnapshot = RemoteReviewDemoRuntime.makeSoundMixerSnapshot()
+    private var isSoundMixerStreaming = false
+    private var brightnessSnapshot = RemoteReviewDemoRuntime.makeBrightnessSnapshot()
+    private var isBrightnessStreaming = false
 
     init() {
         let connectedAt = Date(timeIntervalSince1970: 1_800_000_000)
@@ -153,6 +157,84 @@ actor RemoteReviewDemoRuntime {
         let selectedStatuses = (statuses[macID] ?? []).filter { controlIDs.contains($0.id) }
         publish(.catalog(macID, catalog.revision, catalog.controls))
         publish(.statusSnapshot(macID, selectedStatuses))
+    }
+
+    func setSoundMixerStreaming(_ enabled: Bool) {
+        isSoundMixerStreaming = enabled
+        guard enabled, let macID = authenticatedMacID else { return }
+        publish(.soundMixer(macID, soundMixerSnapshot))
+    }
+
+    func sendSoundMixer(_ command: RemoteSoundMixerCommand) {
+        let current = soundMixerSnapshot
+        var systemVolume = current.systemVolume
+        var apps = current.apps
+        func update(_ id: String, _ transform: (RemoteSoundMixerApp) -> RemoteSoundMixerApp) {
+            guard let index = apps.firstIndex(where: { $0.id == id }) else { return }
+            apps[index] = transform(apps[index])
+        }
+        switch command {
+        case let .setSystemVolume(volume):
+            systemVolume = volume
+        case let .setAppVolume(id, volume):
+            update(id) { .init(id: $0.id, name: $0.name, volume: volume, isMuted: $0.isMuted, equalizer: $0.equalizer, routing: $0.routing) }
+        case let .setAppMuted(id, isMuted):
+            update(id) { .init(id: $0.id, name: $0.name, volume: $0.volume, isMuted: isMuted, equalizer: $0.equalizer, routing: $0.routing) }
+        case let .setAppEqualizerGain(id, band, gain):
+            update(id) { app in
+                guard let equalizer = app.equalizer, equalizer.gains.indices.contains(band) else { return app }
+                var gains = equalizer.gains
+                gains[band] = gain
+                let status: RemoteSoundMixerEqualizer.Status = gains.allSatisfy { $0 == 0 } ? .flat : .active
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: .init(gains: gains, status: status), routing: app.routing)
+            }
+        case let .resetAppEqualizer(id):
+            update(id) { app in
+                guard app.equalizer != nil else { return app }
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: .init(gains: [], status: .flat), routing: app.routing)
+            }
+        case let .toggleAppOutputDevice(id, deviceID):
+            guard current.outputDevices.contains(where: { $0.id == deviceID }) else { break }
+            update(id) { app in
+                guard let routing = app.routing else { return app }
+                var selected = routing.selectedDeviceIDs
+                if let index = selected.firstIndex(of: deviceID) { selected.remove(at: index) } else { selected.append(deviceID) }
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: app.equalizer, routing: .init(selectedDeviceIDs: selected, status: selected.isEmpty ? .followingSystem : .active))
+            }
+        case let .followSystemOutput(id):
+            update(id) { app in
+                guard app.routing != nil else { return app }
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: app.equalizer, routing: .init(selectedDeviceIDs: [], status: .followingSystem))
+            }
+        }
+        soundMixerSnapshot = .init(
+            revision: current.revision + 1,
+            isEnabled: current.isEnabled,
+            systemVolume: systemVolume,
+            output: current.output,
+            apps: apps,
+            isSystemVolumeAvailable: current.isSystemVolumeAvailable,
+            outputDevices: current.outputDevices
+        )
+        guard isSoundMixerStreaming, let macID = authenticatedMacID else { return }
+        publish(.soundMixer(macID, soundMixerSnapshot))
+    }
+
+    func setBrightnessStreaming(_ enabled: Bool) {
+        isBrightnessStreaming = enabled
+        guard enabled, let macID = authenticatedMacID else { return }
+        publish(.brightness(macID, brightnessSnapshot))
+    }
+
+    func sendBrightness(_ command: RemoteBrightnessCommand) {
+        guard case let .setLevel(displayID, level) = command else { return }
+        let displays = brightnessSnapshot.displays.map { display in
+            guard display.id == displayID, display.control != .unavailable else { return display }
+            return RemoteBrightnessDisplay(id: display.id, name: display.name, control: display.control, level: level, hasError: false)
+        }
+        brightnessSnapshot = .init(revision: brightnessSnapshot.revision + 1, displays: displays)
+        guard isBrightnessStreaming, let macID = authenticatedMacID else { return }
+        publish(.brightness(macID, brightnessSnapshot))
     }
 
     func send(_ invocation: RemoteActionInvocation) throws -> RemoteActionResult {
@@ -366,6 +448,48 @@ actor RemoteReviewDemoRuntime {
         preparedPairings = [:]
         preparedPairingRecord = nil
         eventBacklog = []
+        soundMixerSnapshot = Self.makeSoundMixerSnapshot()
+        isSoundMixerStreaming = false
+        brightnessSnapshot = Self.makeBrightnessSnapshot()
+        isBrightnessStreaming = false
+    }
+
+    private nonisolated static func makeBrightnessSnapshot() -> RemoteBrightnessSnapshot {
+        .init(revision: 1, displays: [
+            .init(id: 1, name: "Built-in Retina Display", control: .native, level: 0.7, hasError: false),
+            .init(id: 2, name: "Studio Display", control: .ddc, level: 0.5, hasError: false),
+        ])
+    }
+
+    private nonisolated static func makeSoundMixerSnapshot() -> RemoteSoundMixerSnapshot {
+        .init(
+            revision: 1,
+            isEnabled: true,
+            systemVolume: 62,
+            output: .init(name: "Studio Display Speakers", symbolName: "display"),
+            apps: [
+                .init(
+                    id: "com.apple.Music",
+                    name: "Music",
+                    volume: 80,
+                    isMuted: false,
+                    equalizer: .init(gains: [3, 2, 1, 0, -1, 0, 1, 2, 3, 2], status: .active),
+                    routing: .init(selectedDeviceIDs: [], status: .followingSystem)
+                ),
+                .init(
+                    id: "com.apple.Safari",
+                    name: "Safari",
+                    volume: 45,
+                    isMuted: false,
+                    equalizer: .init(gains: [], status: .flat),
+                    routing: .init(selectedDeviceIDs: [], status: .followingSystem)
+                ),
+            ],
+            outputDevices: [
+                .init(id: "review-studio-display", name: "Studio Display Speakers", isDefault: true),
+                .init(id: "review-airpods", name: "AirPods Pro", isDefault: false),
+            ]
+        )
     }
 
     private nonisolated static func makeDescriptor(
@@ -444,8 +568,47 @@ extension RemoteConnectionClient {
             forgetMac: { await runtime.forget($0) },
             subscribe: { try await runtime.subscribe($0) },
             send: { try await runtime.send($0) },
-            sendSoundMixer: { _ in },
+            fetchCodexUsage: { invocation in
+                let snapshot = await runtime.connectionSnapshot()
+                guard invocation.macID == snapshot.authenticatedMacID,
+                      invocation.sessionID == snapshot.authenticatedSessionID else {
+                    throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+                }
+                return .init(
+                    requestID: invocation.request.requestID,
+                    result: .success(.init(
+                        account: .init(email: "review@example.com", plan: "Plus"),
+                        session: .init(remainingPercent: 82, resetAt: Date(timeIntervalSince1970: 1_800_003_600)),
+                        weekly: .init(remainingPercent: 64, resetAt: Date(timeIntervalSince1970: 1_800_604_800)),
+                        resetCredits: .available(count: 3, expiresAt: Date(timeIntervalSince1970: 1_800_086_400)),
+                        creditBalance: .available(remaining: 12.5, limit: 50, unit: "credits"),
+                        source: .oauth,
+                        fetchedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                        activity: invocation.request.includeLocalActivity ? .init(
+                            dailyUsage: [.init(date: Date(timeIntervalSince1970: 1_800_000_000), tokenCount: 12_345)],
+                            isPartial: false
+                        ) : nil
+                    ))
+                )
+            },
+            fetchClaudeUsage: { invocation in
+                let snapshot = await runtime.connectionSnapshot()
+                guard invocation.macID == snapshot.authenticatedMacID, invocation.sessionID == snapshot.authenticatedSessionID else {
+                    throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+                }
+                return .init(requestID: invocation.request.requestID, result: .success(.init(
+                    account: .init(email: "review@example.com", plan: "Pro"),
+                    session: .init(remainingPercent: 75, resetAt: Date(timeIntervalSince1970: 1_800_003_600)),
+                    weekly: .init(remainingPercent: 64, resetAt: Date(timeIntervalSince1970: 1_800_604_800)),
+                    models: [.init(id: "seven_day_sonnet", name: "Sonnet", quota: .init(remainingPercent: 90, resetAt: nil))],
+                    extraUsage: .init(isEnabled: false, used: nil, limit: nil, currency: nil, utilization: nil),
+                    fetchedAt: Date(timeIntervalSince1970: 1_800_000_000)) ))
+            },
+            sendSoundMixer: { await runtime.sendSoundMixer($0) },
             setSystemMonitorStreaming: { _ in },
+            setSoundMixerStreaming: { await runtime.setSoundMixerStreaming($0) },
+            setBrightnessStreaming: { await runtime.setBrightnessStreaming($0) },
+            sendBrightness: { await runtime.sendBrightness($0) },
             setForegrounded: { _ in }
         )
     }
@@ -475,6 +638,8 @@ extension RemotePersistenceClient {
             saveStatuses: { await runtime.setStatuses($1, for: $0) },
             replaceStatusSnapshot: { await runtime.setStatuses($1, for: $0) },
             mergeStatus: { await runtime.mergeStatus($1, for: $0) },
+            loadAphroditeLibrary: { _ in nil },
+            replaceAphroditeLibrary: { _, _ in },
             markMacTombstoned: { await runtime.markTombstoned($0) },
             preparePairingState: { await runtime.preparePairingState($0, transactionID: $1, credentialVerifier: $2) },
             loadPreparedPairingState: { await runtime.loadPreparedPairingState() },

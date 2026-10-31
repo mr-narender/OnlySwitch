@@ -14,7 +14,7 @@ extension RemoteCatalogProvider {
         now: @escaping @MainActor @Sendable () -> Date = Date.init
     ) {
         catalog = {
-            let builtInDescriptors = builtIns().map { type in
+            let builtInDescriptors = builtIns().filter { $0 != .aphrodite && $0 != .dockPreview && $0 != .xcodeCleaner && $0 != .appUninstaller && $0 != .tailscale }.map { type in
                 Self.descriptor(for: type, control: makeBuiltIn(type))
             }
             let shortcutDescriptors = await shortcutNames().map(Self.descriptor(forShortcut:))
@@ -27,7 +27,10 @@ extension RemoteCatalogProvider {
             case .builtIn:
                 guard let rawValue = UInt64(id.value),
                       String(rawValue) == id.value,
-                      let type = SwitchType(rawValue: rawValue),
+                      let type = SwitchType(legacyIdentifier: rawValue),
+                      type != .xcodeCleaner && type != .appUninstaller && type != .tailscale,
+                      type != .aphrodite,
+                      type != .dockPreview,
                       builtIns().contains(type) else {
                     throw RemoteProtocolError(code: .controlNotFound, message: "Control not found")
                 }
@@ -72,7 +75,7 @@ extension RemoteCatalogProvider {
     @MainActor
     static var live: RemoteCatalogProvider {
         RemoteCatalogProvider(
-            builtIns: { SwitchType.allCases },
+            builtIns: { SwitchType.offeredCases },
             makeBuiltIn: { $0.getNewSwitchInstance() },
             shortcutNames: { await ShortcutsSettingVM.shared.getAllInstalledShortcutName() ?? [] },
             evolutions: { try await EvolutionListService.liveValue.loadEvolutionList() },
@@ -95,7 +98,7 @@ extension RemoteCatalogProvider {
         let barInfo = type.barInfo()
         let availability = availability(for: type, control: control)
         return RemoteControlDescriptor(
-            id: .init(kind: .builtIn, value: String(type.rawValue)),
+            id: .init(kind: .builtIn, value: String(type.legacyIdentifier)),
             title: barInfo.title,
             behavior: behavior(for: barInfo.controlType),
             icon: RemoteIconAdapter.icon(for: type, barInfo: barInfo),
@@ -154,7 +157,7 @@ extension RemoteCatalogProvider {
         let isOn = controlType == .Button ? nil : await control.currentStatus()
         let info = await control.currentInfo()
         return RemoteControlStatus(
-            id: .init(kind: .builtIn, value: String(type.rawValue)),
+            id: .init(kind: .builtIn, value: String(type.legacyIdentifier)),
             isAvailable: availability.isAvailable,
             unavailableReason: availability.reason,
             isOn: isOn,
@@ -187,6 +190,7 @@ extension RemoteCatalogProvider {
 
     @MainActor
     static func availability(for type: SwitchType, control: SwitchProvider) -> RemoteControlAvailability {
+        guard type != .xcodeCleaner && type != .appUninstaller && type != .tailscale else { return .unavailable("Not available on this Mac") }
         guard control.isVisible() else {
             return .unavailable(unavailableReason(for: type))
         }

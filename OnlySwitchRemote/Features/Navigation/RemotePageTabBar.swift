@@ -7,9 +7,11 @@ struct RemotePageTabBar: View {
     static let visualHeight: CGFloat = 44
     static let minimumTouchHeight: CGFloat = 44
     static let contentBottomInset = minimumTouchHeight + 4
-    static let maximumWidth: CGFloat = 260
+    static let maximumWidth: CGFloat = 390
+    static let horizontalPadding: CGFloat = 16
 
     @Binding var selection: RemoteAppPage
+    var configuration = RemoteTabConfiguration()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorSchemeContrast) private var contrast
@@ -17,17 +19,19 @@ struct RemotePageTabBar: View {
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 4
-            let width = max(0, (proxy.size.width - spacing) / 2)
+            let count = CGFloat(configuration.visiblePages.count)
+            let width = max(0, (proxy.size.width - spacing * (count - 1)) / count)
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.accentColor.opacity(0.18))
                     .overlay { Capsule().stroke(Color.accentColor.opacity(0.45)) }
                     .frame(width: width, height: Self.visualHeight)
-                    .offset(x: selection == .controls ? 0 : width + spacing)
+                    .offset(x: CGFloat(configuration.visiblePages.firstIndex(of: selection) ?? 0) * (width + spacing))
                     .accessibilityHidden(true)
                 HStack(spacing: spacing) {
-                    tabButton(.controls, title: "Controls", symbol: "switch.2")
-                    tabButton(.systemMonitor, title: "System Monitor", symbol: "waveform.path.ecg")
+                    ForEach(configuration.visiblePages, id: \.self) { page in
+                        tabButton(page, title: page.title) { RemoteAppPageIcon(page: page) }
+                    }
                 }
             }
             .animation(reduceMotion ? nil : .smooth(duration: 0.28), value: selection)
@@ -52,14 +56,15 @@ struct RemotePageTabBar: View {
         }
         .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
         .frame(maxWidth: Self.maximumWidth)
+        .padding(.horizontal, Self.horizontalPadding)
         .frame(maxWidth: .infinity)
     }
 
-    private func tabButton(_ page: RemoteAppPage, title: LocalizedStringKey, symbol: String) -> some View {
+    private func tabButton<Icon: View>(_ page: RemoteAppPage, title: LocalizedStringKey, @ViewBuilder icon: () -> Icon) -> some View {
         Button {
             selection = page
         } label: {
-            Label(title, systemImage: symbol)
+            Label { Text(title) } icon: { icon() }
                 .labelStyle(.iconOnly)
                 .font(.body.weight(.semibold))
                 .foregroundStyle(selection == page ? .primary : .secondary)

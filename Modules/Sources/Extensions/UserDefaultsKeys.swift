@@ -14,6 +14,7 @@ public extension UserDefaults {
         public static let appearanceColumnCount = "appearanceColumnCountKey"
         public static let showAds = "showAdsKey"
         public static let showDesktopPet = "showDesktopPetKey"
+        public static let dockPreviewEnabled = "dockPreviewEnabledKey"
         //Evolution
         public static let evolutionIDs = "evolutionIDsKey"
         //PomodoroTimer
@@ -38,7 +39,11 @@ public extension UserDefaults {
         public static let autoCollapseMenubarTime = "autoCollapseMenubarTimeKey"
         public static let menubarCollapsable = "menubarCollapsableKey"
         //Switch
+        public static let didInstallTailscaleSwitch = "didInstallTailscaleSwitchKey"
         public static let SwitchState = "SwitchStateKey"
+        public static let didInstallReverseScrollDirectionSwitch = "didInstallReverseScrollDirectionSwitchKey"
+        public static let reverseScrollDirectionEnabled = "reverseScrollDirectionEnabledKey"
+        public static let reverseScrollDirectionOriginalNaturalScrolling = "reverseScrollDirectionOriginalNaturalScrollingKey"
         //Shortcuts
         public static let shortcutsDic = "shortcutsDicKey"
         //Sort
@@ -48,6 +53,21 @@ public extension UserDefaults {
         public static let soundMixerEnabled = "soundMixerEnabledKey"
         // System Monitor
         public static let systemMonitorPreferences = "systemMonitorPreferencesKey"
+        public static let showSystemMonitorTab = "showSystemMonitorTabKey"
+        public static let didInstallSystemMonitorSwitch = "didInstallSystemMonitorSwitchKey"
+        // Xcode Cleaner
+        public static let showAppUninstallerTab = "showAppUninstallerTabKey"
+        public static let didInstallAppUninstallerSwitch = "didInstallAppUninstallerSwitchKey"
+        public static let showXcodeCleanerTab = "showXcodeCleanerTabKey"
+        public static let didInstallXcodeCleanerSwitch = "didInstallXcodeCleanerSwitchKey"
+        // Screenshots
+        public static let showScreenshotsTab = "showScreenshotsTabKey"
+        /// Machine specific (system screenshot settings takeover); intentionally not exportable.
+        public static let screenshotsCaptureEnabled = "screenshotsCaptureEnabledKey"
+        /// Machine specific backup of `com.apple.screencapture` values; intentionally not exportable.
+        public static let screenshotsPreviousCaptureSettings = "screenshotsPreviousCaptureSettingsKey"
+        /// Machine specific backup of the Simulator screenshot save location; intentionally not exportable.
+        public static let screenshotsPreviousSimulatorLocation = "screenshotsPreviousSimulatorLocationKey"
         //BackNoises
         public static let backNoisesTrack = "backNoisesTrackKey"
         public static let automaticallyStopPlayNoiseTime = "automaticallyStopPlayNoiseTimeKey"
@@ -56,7 +76,14 @@ public extension UserDefaults {
         public static let autoStopKeepAwakeTime = "autoStopKeepAwakeTimeKey"
         public static let autoStopKeepAwakeStartDate = "autoStopKeepAwakeStartDateKey"
         public static let autoStopKeepAwakeEndDate = "autoStopKeepAwakeEndDateKey"
+        public static let autoStopKeepAwakeOnSleep = "autoStopKeepAwakeOnSleepKey"
         public static let KeepAwakeKey = "KeepAwakeKey"
+        // Display Brightness
+        public static let showBrightnessTab = "showBrightnessTabKey"
+        public static let smoothBrightnessTransitions = "smoothBrightnessTransitionsKey"
+        public static let combinedBrightnessDimming = "combinedBrightnessDimmingKey"
+        public static let controlWithBrightnessKeys = "controlWithBrightnessKeysKey"
+        public static let allowZeroSoftwareBrightness = "allowZeroSoftwareBrightnessKey"
         //Dim Screen
         public static let autoDimScreenTime = "autoDimScreenTimeKey"
         public static let dimScreenPercent = "dimScreenPercentKey"
@@ -72,6 +99,12 @@ public extension UserDefaults {
         //Sticker
         public static let sticker = "stickerKey"
         //OnlyAgent
+        public static let showClaudeUsageTab = "showClaudeUsageTabKey"
+        public static let didInstallClaudeUsageSwitch = "didInstallClaudeUsageSwitchKey"
+        public static let showCodexUsageTab = "showCodexUsageTabKey"
+        public static let didInstallCodexUsageSwitch = "didInstallCodexUsageSwitchKey"
+        public static let showAphroditeTab = "showAphroditeTabKey"
+        public static let didInstallAphroditeSwitch = "didInstallAphroditeSwitchKey"
         public static let currentAIModel = "currentAIModelKey"
         public static let ollamaUrl = "ollamaUrlKey"
         public static let ollamaModels = "ollamaModelsKey"
@@ -95,6 +128,7 @@ public extension UserDefaults {
         public static let checkUpdateOnLaunch = "checkUpdateOnLaunchKey"
         public static let hideMenuAfterRunning = "hideMenuAfterRunningKey"
         public static let canPlayEffectSound = "canPlayESKey"
+        public static let onlySwitchLaunchCampaignAcknowledgedDate = "onlySwitchLaunchCampaignAcknowledgedDateKey"
         public static let onlyRemoteCampaignAcknowledgedVersion = "onlyRemoteCampaignAcknowledgedVersionKey"
 
         /// `UserDefaults.standard` keys included in a settings backup.
@@ -103,22 +137,23 @@ public extension UserDefaults {
         /// user-facing setting (hasRunRadio, radioStation, window session state, caches,
         /// version-check bookkeeping, live volume mirrors).
         public static let exportableKeys: [String] = [
-            menubarIcon, appearanceColumnCount, showAds, showDesktopPet,
+            menubarIcon, appearanceColumnCount, showAds, showDesktopPet, dockPreviewEnabled,
             evolutionIDs,
             WorkDuration, RestDuration, RestAlert, WorkAlert, AllowNotificationAlert, PTimerCycleCount,
             soundWaveEffectDisplay, volume, allowNotificationChangingStation, allowNotificationTrack, radioEnable,
             isMenubarCollapse, autoCollapseMenubarTime, menubarCollapsable,
-            SwitchState,
+            SwitchState, reverseScrollDirectionEnabled,
             shortcutsDic,
             orderWeight, onlyControlOrderWeight,
             soundMixerEnabled,
-            systemMonitorPreferences,
+            systemMonitorPreferences, showSystemMonitorTab, showXcodeCleanerTab, showAppUninstallerTab, showScreenshotsTab,
             backNoisesTrack, automaticallyStopPlayNoiseTime,
-            autoStopKeepAwakeMode, autoStopKeepAwakeTime, autoStopKeepAwakeStartDate, autoStopKeepAwakeEndDate, KeepAwakeKey,
+            autoStopKeepAwakeMode, autoStopKeepAwakeTime, autoStopKeepAwakeStartDate, autoStopKeepAwakeEndDate, autoStopKeepAwakeOnSleep, KeepAwakeKey,
             autoDimScreenTime, dimScreenPercent, syncExternalBrightness,
+            showBrightnessTab, smoothBrightnessTransitions, combinedBrightnessDimming, allowZeroSoftwareBrightness, controlWithBrightnessKeys,
             nightShiftStrength, nightShiftStartDate, nightShiftEndDate, isNightShiftScheduleOn,
             sticker,
-            currentAIModel, ollamaUrl, openAIHost,
+            showCodexUsageTab, showClaudeUsageTab, showAphroditeTab, currentAIModel, ollamaUrl, openAIHost,
             keyLightBrightness,
             authenticatorEnabled,
             ScreenSaverInterval, checkUpdateOnLaunch, hideMenuAfterRunning, canPlayEffectSound,
