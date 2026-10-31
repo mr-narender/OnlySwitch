@@ -11,7 +11,12 @@ import XCTest
 import Testing
 import Combine
 import DesktopPet
+import Defines
 import Switches
+import Utilities
+import Aphrodite
+import UserNotifications
+import ComposableArchitecture
 @testable import OnlySwitch
 
 class OnlySwitchTests: XCTestCase {
@@ -172,6 +177,44 @@ class OnlySwitchTests: XCTestCase {
 }
 
 @MainActor
+@Test func aphroditeBuiltInSwitchUpdatesTheSharedTabPreference() async throws {
+    var isVisible = true
+    let control = AphroditeSwitch(
+        visibility: { isVisible },
+        setVisibility: { isVisible = $0 }
+    )
+
+    #expect(control.type == .aphrodite)
+    #expect(await control.currentStatus())
+    try await control.operateSwitch(isOn: false)
+    #expect(await control.currentStatus() == false)
+}
+
+@Test func bundledModelCatalogIncludesLatestVerifiedModelsAndRetainsLegacyChoices() throws {
+    let url = try #require(Bundle.main.url(forResource: "models", withExtension: "json"))
+    let catalog = try JSONDecoder().decode(TestModelCatalog.self, from: Data(contentsOf: url))
+
+    #expect(catalog.items(provider: "openai", family: "gpt").contains("gpt-6.1-sol"))
+    #expect(catalog.items(provider: "openai", family: "gpt").contains("gpt-5.6"))
+    #expect(catalog.items(provider: "google", family: "gemini").contains("gemini-3.8-flash"))
+    #expect(catalog.items(provider: "anthropic", family: "claude").contains("claude-opus-5-5"))
+}
+
+private struct TestModelCatalog: Decodable {
+    struct Group: Decodable {
+        let provider: String
+        let family: String
+        let items: [String]
+    }
+
+    let models: [Group]
+
+    func items(provider: String, family: String) -> [String] {
+        models.first { $0.provider == provider && $0.family == family }?.items ?? []
+    }
+}
+
+@MainActor
 @Test func desktopPetBuiltInSwitchMapsVisibilityWithoutAdditionalEffects() async throws {
     var isVisible = false
     var writes: [Bool] = []
@@ -200,6 +243,332 @@ class OnlySwitchTests: XCTestCase {
 }
 
 @MainActor
+@Test func codexUsageBuiltInSwitchControlsTabVisibility() async throws {
+    var isVisible = true
+    let control = CodexUsageSwitch(
+        visibility: { isVisible },
+        setVisibility: { isVisible = $0 }
+    )
+
+    #expect(control.type == .codexUsage)
+    #expect(SwitchType.codexUsage.barInfo().title == "Codex Usage")
+    #expect(await control.currentStatus())
+
+    try await control.operateSwitch(isOn: false)
+
+    #expect(await control.currentStatus() == false)
+}
+
+@MainActor
+@Test func systemMonitorBuiltInSwitchControlsTabVisibility() async throws {
+    var isVisible = true
+    var writes: [Bool] = []
+    let control = SystemMonitorSwitch(
+        visibility: { isVisible },
+        setVisibility: {
+            writes.append($0)
+            isVisible = $0
+        }
+    )
+
+    #expect(control.type == .systemMonitor)
+    #expect(SwitchType.systemMonitor.legacyIdentifier == 1 << 42)
+    #expect(SwitchType.systemMonitor.barInfo().title == "System Monitor")
+    #expect(control.isVisible())
+    #expect(await control.currentStatus())
+
+    try await control.operateSwitch(isOn: false)
+
+    #expect(await control.currentStatus() == false)
+    #expect(writes == [false])
+
+    try await control.operateSwitch(isOn: true)
+
+    #expect(await control.currentStatus())
+    #expect(writes == [false, true])
+}
+
+@MainActor
+@Test func reverseScrollDirectionBuiltInSwitchMapsStatusAndControllerRequests() async throws {
+    var isReversed = false
+    var writes: [Bool] = []
+    let control = ReverseScrollDirectionSwitch(
+        readStatus: { isReversed },
+        writeStatus: { value in
+            writes.append(value)
+            isReversed = value
+        }
+    )
+
+    #expect(control.type == .reverseScrollDirection)
+    #expect(SwitchType.reverseScrollDirection.legacyIdentifier == 1 << 41)
+    #expect(SwitchType.reverseScrollDirection.barInfo().title == "Natural Scrolling")
+    #expect(control.isVisible())
+    #expect(await control.currentStatus() == false)
+
+    try await control.operateSwitch(isOn: true)
+    #expect(await control.currentStatus())
+    #expect(writes == [true])
+
+    try await control.operateSwitch(isOn: false)
+    #expect(await control.currentStatus() == false)
+    #expect(writes == [true, false])
+}
+
+@MainActor
+@Test func reverseScrollDirectionBuiltInSwitchHandlesCommandErrors() async {
+    let readFailure = ReverseScrollDirectionSwitch(
+        readStatus: { throw ReverseScrollDirectionTestError.failed },
+        writeStatus: { _ in }
+    )
+    #expect(await readFailure.currentStatus() == false)
+
+    let writeFailure = ReverseScrollDirectionSwitch(
+        readStatus: { false },
+        writeStatus: { _ in throw ReverseScrollDirectionTestError.failed }
+    )
+    await #expect(throws: SwitchError.self) {
+        try await writeFailure.operateSwitch(isOn: true)
+    }
+}
+
+private enum ReverseScrollDirectionTestError: Error {
+    case failed
+}
+
+struct ScrollWheelEventTraitsTests {
+    @Test func ordinaryVerticalWheelIsInverted() {
+        let traits = ScrollWheelEventTraits(
+            isContinuous: false,
+            scrollPhase: 0,
+            momentumPhase: 0,
+            tabletDeviceID: 0,
+            sourceUserData: 0,
+            vertical: .init(line: 3, point: 24, fixedPoint: 24 << 16),
+            horizontal: .init(line: 0, point: 0, fixedPoint: 0)
+        )
+
+        #expect(traits.shouldInvert)
+    }
+
+    @Test func continuousTrackpadEventPassesThrough() {
+        let traits = ScrollWheelEventTraits(
+            isContinuous: true,
+            scrollPhase: 0,
+            momentumPhase: 0,
+            tabletDeviceID: 0,
+            sourceUserData: 0,
+            vertical: .init(line: 1, point: 8, fixedPoint: 8 << 16),
+            horizontal: .init(line: 0, point: 0, fixedPoint: 0)
+        )
+
+        #expect(traits.shouldInvert == false)
+    }
+
+    @Test func phaseBearingEventsPassThrough() {
+        let gesture = ScrollWheelEventTraits(
+            isContinuous: false,
+            scrollPhase: 1,
+            momentumPhase: 0,
+            tabletDeviceID: 0,
+            sourceUserData: 0,
+            vertical: .init(line: 1, point: 8, fixedPoint: 8 << 16),
+            horizontal: .init(line: 0, point: 0, fixedPoint: 0)
+        )
+        let momentum = ScrollWheelEventTraits(
+            isContinuous: false,
+            scrollPhase: 0,
+            momentumPhase: 1,
+            tabletDeviceID: 0,
+            sourceUserData: 0,
+            vertical: .init(line: 1, point: 8, fixedPoint: 8 << 16),
+            horizontal: .init(line: 0, point: 0, fixedPoint: 0)
+        )
+
+        #expect(gesture.shouldInvert == false)
+        #expect(momentum.shouldInvert == false)
+    }
+
+    @Test func tabletAndDiagonalEventsPassThrough() {
+        let tablet = ScrollWheelEventTraits(
+            isContinuous: false,
+            scrollPhase: 0,
+            momentumPhase: 0,
+            tabletDeviceID: 7,
+            sourceUserData: 0,
+            vertical: .init(line: 1, point: 8, fixedPoint: 8 << 16),
+            horizontal: .init(line: 0, point: 0, fixedPoint: 0)
+        )
+        let diagonal = ScrollWheelEventTraits(
+            isContinuous: false,
+            scrollPhase: 0,
+            momentumPhase: 0,
+            tabletDeviceID: 0,
+            sourceUserData: 0,
+            vertical: .init(line: 1, point: 8, fixedPoint: 8),
+            horizontal: .init(line: 1, point: 4, fixedPoint: 4 << 16)
+        )
+
+        #expect(tablet.shouldInvert == false)
+        #expect(diagonal.shouldInvert == false)
+    }
+
+    @Test func syntheticReplacementEventPassesThrough() {
+        let traits = ScrollWheelEventTraits(
+            isContinuous: false,
+            scrollPhase: 0,
+            momentumPhase: 0,
+            tabletDeviceID: 0,
+            sourceUserData: ScrollDirectionEventTap.syntheticEventTag,
+            vertical: .init(line: 1, point: 8, fixedPoint: 8 << 16),
+            horizontal: .init(line: 0, point: 0, fixedPoint: 0)
+        )
+
+        #expect(traits.shouldInvert == false)
+    }
+}
+
+struct VerticalScrollInversionPlanTests {
+    @Test func ordinaryWheelInvertsAllVerticalDeltaRepresentations() {
+        let inverted = VerticalScrollDeltas(
+            line: -2,
+            point: -17,
+            fixedPoint: -(17 << 16)
+        ).inverted
+
+        #expect(inverted == VerticalScrollDeltas(line: 2, point: 17, fixedPoint: 17 << 16))
+    }
+
+    @Test func minimumIntegerDeltasAreNegatedWithoutOverflow() {
+        let inverted = VerticalScrollDeltas(line: .min, point: .min, fixedPoint: .min).inverted
+
+        #expect(inverted.line == .max)
+        #expect(inverted.point == .max)
+        #expect(inverted.fixedPoint == .max)
+    }
+}
+
+struct ReverseScrollRuntimeStateTests {
+    @Test func requestedStateCanSurviveAStoppedTapAndResumeLater() {
+        var state = ReverseScrollRuntimeState(isRequested: true)
+
+        #expect(state.isRequested)
+        #expect(state.currentStatus == false)
+
+        state.didStart()
+        #expect(state.currentStatus)
+
+        state.didStop()
+        #expect(state.isRequested)
+        #expect(state.currentStatus == false)
+
+        state.didStart()
+        #expect(state.currentStatus)
+    }
+
+    @Test func disablingClearsBothRequestedAndRunningState() {
+        var state = ReverseScrollRuntimeState(isRequested: true)
+        state.didStart()
+
+        state.setRequested(false)
+
+        #expect(state.isRequested == false)
+        #expect(state.isRunning == false)
+        #expect(state.currentStatus == false)
+    }
+}
+
+struct LegacyScrollDirectionMigrationTests {
+    @MainActor
+    @Test func migrationRestoresAndRemovesSavedPreferenceAfterSuccess() throws {
+        let suiteName = "LegacyScrollDirectionMigrationTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let key = UserDefaults.Key.reverseScrollDirectionOriginalNaturalScrolling
+        defaults.set(false, forKey: key)
+        var restoredValues: [Bool] = []
+
+        let succeeded = restoreLegacyScrollDirectionIfNeeded(
+            defaults: defaults,
+            preference: GlobalScrollDirectionPreference(setNatural: { value in
+                restoredValues.append(value)
+                return true
+            })
+        )
+
+        #expect(succeeded)
+        #expect(restoredValues == [false])
+        #expect(defaults.object(forKey: key) == nil)
+    }
+
+    @MainActor
+    @Test func migrationKeepsSavedPreferenceWhenRestoreFails() throws {
+        let suiteName = "LegacyScrollDirectionMigrationTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let key = UserDefaults.Key.reverseScrollDirectionOriginalNaturalScrolling
+        defaults.set(true, forKey: key)
+
+        let succeeded = restoreLegacyScrollDirectionIfNeeded(
+            defaults: defaults,
+            preference: GlobalScrollDirectionPreference(setNatural: { _ in false })
+        )
+
+        #expect(succeeded == false)
+        #expect(defaults.object(forKey: key) as? Bool == true)
+    }
+}
+
+struct BrightnessSyncStateTests {
+    @Test func pollingRequiresRunningSyncWithBuiltInAndExternalDisplays() {
+        var state = BrightnessSyncState()
+
+        #expect(!state.shouldPoll)
+
+        state.start()
+        #expect(!state.shouldPoll)
+
+        let generation = state.topologyChanged(hasBuiltInDisplay: true)
+        #expect(!state.shouldPoll)
+        let emptyRefreshAccepted = state.acceptRefresh(generation: generation, externalDisplayCount: 0)
+        #expect(emptyRefreshAccepted)
+        #expect(!state.shouldPoll)
+        let externalRefreshAccepted = state.acceptRefresh(generation: generation, externalDisplayCount: 1)
+        #expect(externalRefreshAccepted)
+        #expect(state.shouldPoll)
+
+        _ = state.topologyChanged(hasBuiltInDisplay: false)
+        #expect(!state.shouldPoll)
+    }
+
+    @Test func stopAndStaleRefreshesCannotReenablePolling() {
+        var state = BrightnessSyncState()
+        state.start()
+        let generation = state.topologyChanged(hasBuiltInDisplay: true)
+
+        state.stop()
+
+        let stoppedRefreshAccepted = state.acceptRefresh(generation: generation, externalDisplayCount: 1)
+        #expect(!stoppedRefreshAccepted)
+        #expect(!state.shouldPoll)
+    }
+
+    @Test func currentTopologyRefreshIsAcceptedAndSupersedesOlderRefreshes() {
+        var state = BrightnessSyncState()
+        state.start()
+        let oldGeneration = state.topologyChanged(hasBuiltInDisplay: true)
+        let currentGeneration = state.topologyChanged(hasBuiltInDisplay: true)
+
+        let staleRefreshAccepted = state.acceptRefresh(generation: oldGeneration, externalDisplayCount: 2)
+        #expect(!staleRefreshAccepted)
+        #expect(!state.shouldPoll)
+        let currentRefreshAccepted = state.acceptRefresh(generation: currentGeneration, externalDisplayCount: 2)
+        #expect(currentRefreshAccepted)
+        #expect(state.shouldPoll)
+    }
+}
+
+@MainActor
 private final class TestDesktopPetPomodoroPresenter: DesktopPetPomodoroPresenting {
     var isVisible = false
     private(set) var pomodoroState: DesktopPetPomodoroState?
@@ -211,6 +580,49 @@ private final class TestDesktopPetPomodoroPresenter: DesktopPetPomodoroPresentin
 
 @MainActor
 struct SettingsViewTests {
+    @Test("The open settings sidebar refreshes titles after a language change", .serialized)
+    func sidebarTitlesRefreshAfterLanguageChange() {
+        let languageManager = LanguageManager.sharedManager
+        let originalLanguage = languageManager.currentLang
+        let originalSystemLanguagePriority = languageManager.systemLangPriority
+        let originalSelection = SettingsVM.shared.selection
+        defer {
+            SettingsVM.shared.selection = originalSelection
+            if originalSystemLanguagePriority {
+                languageManager.setSystemLangPriority()
+            } else {
+                languageManager.setCertainLang(originalLanguage)
+            }
+        }
+
+        languageManager.setCertainLang("en")
+        SettingsVM.shared.selection = .Customize
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 650),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let hostingView = NSHostingView(rootView: SettingsView())
+        window.contentView = hostingView
+        window.orderFrontRegardless()
+        hostingView.layoutSubtreeIfNeeded()
+        defer { window.close() }
+
+        #expect(
+            waitForAccessibilityValue("General", in: hostingView),
+            "The sidebar should initially show the English title."
+        )
+
+        languageManager.setCertainLang("ja")
+
+        #expect(
+            waitForAccessibilityValue("一般", in: hostingView),
+            "The open sidebar should refresh its localized titles without recreating the settings window."
+        )
+    }
+
     @Test("The split-view detail renders the restored sidebar destination", .serialized)
     func splitViewDetailRendersRestoredSelection() {
         let originalSelection = SettingsVM.shared.selection
@@ -264,6 +676,65 @@ struct SettingsViewTests {
         ]
             .compactMap { $0 }
             + children.flatMap { accessibilityTree(of: $0) }
+    }
+}
+
+@MainActor
+struct SettingsVMAphroditeLifetimeTests {
+    @Test func retainedStoreFinishesGenerationAfterPresentationIsReleased() async {
+        guard #available(macOS 26.0, *) else { return }
+        let taskID = UUID()
+        let continuation = LockIsolated<CheckedContinuation<String, Error>?>(nil)
+        let delivered = LockIsolated(0)
+        let library = LockIsolated<AphroditeLibrary?>(nil)
+        let owner = SettingsVM()
+        owner.aphroditeStore = Store(initialState: AphroditeReducer.State(
+            prompt: "Build a counter",
+            selection: .init(provider: .openai, model: "gpt-test"),
+            storageState: .ready
+        )) {
+            AphroditeReducer()
+        } withDependencies: {
+            $0.uuid = .constant(taskID)
+            $0.date.now = .distantPast
+            $0.modelProviderService.generateApp = { _ in
+                try await withCheckedThrowingContinuation { pending in
+                    continuation.withValue { $0 = pending }
+                }
+            }
+            $0.aphroditePersistence.insert = { app, selection in
+                let persisted = AphroditeLibrary(apps: [app], selection: selection)
+                library.withValue { $0 = persisted }
+                return persisted
+            }
+            $0.aphroditeLocalNotification.requestAuthorization = { true }
+            $0.aphroditeLocalNotification.deliver = { _ in delivered.withValue { $0 += 1 } }
+        }
+
+        var presentation: NSHostingView<AphroditeSettingsView>? = NSHostingView(
+            rootView: AphroditeSettingsView(store: owner.aphroditeStore)
+        )
+        let operation = owner.aphroditeStore.send(.generateTapped)
+        presentation = nil
+        #expect(presentation == nil)
+        continuation.withValue { $0?.resume(returning: "<!doctype html><html><head><title>Counter</title></head><body></body></html>") }
+        await operation.finish()
+
+        let recreated = NSHostingView(rootView: AphroditeSettingsView(store: owner.aphroditeStore))
+        #expect(owner.aphroditeStore.apps == IdentifiedArray(uniqueElements: library.value!.apps))
+        #expect(delivered.value == 1)
+        _ = recreated
+
+        #expect(owner.aphroditeStore === owner.aphroditeStore)
+    }
+}
+
+struct AphroditeForegroundNotificationTests {
+    @Test func foregroundCompletionUsesBannerAndSound() {
+        let options = AppDelegate.aphroditeForegroundNotificationOptions
+
+        #expect(options.contains(.banner))
+        #expect(options.contains(.sound))
     }
 }
 

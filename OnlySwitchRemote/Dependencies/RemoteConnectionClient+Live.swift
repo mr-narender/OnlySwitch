@@ -4,6 +4,53 @@ import Network
 import RemoteCore
 import RemoteTransport
 
+struct RemoteAphroditeTransferAccumulator: Sendable {
+    let manifest: AphroditeRemoteLibraryManifest
+    private var chunks: [UUID: [Int: Data]] = [:]
+
+    init(manifest: AphroditeRemoteLibraryManifest) {
+        self.manifest = manifest
+    }
+
+    mutating func append(_ chunk: AphroditeRemoteDocumentChunk) throws {
+        guard chunk.transferID == manifest.transferID,
+              let descriptor = manifest.documents.first(where: { $0.appID == chunk.appID }),
+              chunk.index < descriptor.chunkCount,
+              chunks[chunk.appID]?[chunk.index] == nil,
+              (chunks[chunk.appID]?.values.reduce(0) { $0 + $1.count } ?? 0) + chunk.data.count <= descriptor.byteCount else {
+            throw AphroditeRemoteValidationError.invalidChunk
+        }
+        chunks[chunk.appID, default: [:]][chunk.index] = chunk.data
+    }
+
+    func complete() throws -> AphroditeRemoteLibrarySnapshot {
+        let decoder = JSONDecoder()
+        let apps = try manifest.documents.map { descriptor in
+            guard let documentChunks = chunks[descriptor.appID], documentChunks.count == descriptor.chunkCount else {
+                throw AphroditeRemoteValidationError.invalidChunk
+            }
+            var bytes = Data()
+            bytes.reserveCapacity(descriptor.byteCount)
+            for index in 0..<descriptor.chunkCount {
+                guard let chunk = documentChunks[index], bytes.count + chunk.count <= descriptor.byteCount else {
+                    throw AphroditeRemoteValidationError.invalidChunk
+                }
+                bytes.append(chunk)
+            }
+            guard bytes.count == descriptor.byteCount,
+                  Data(SHA256.hash(data: bytes)) == descriptor.sha256 else {
+                throw AphroditeRemoteValidationError.invalidDescriptor
+            }
+            let tool = try decoder.decode(AphroditePersonalTool.self, from: bytes)
+            guard tool.id == descriptor.appID, tool.title == descriptor.title, tool.updatedAt == descriptor.updatedAt else {
+                throw AphroditeRemoteValidationError.invalidDescriptor
+            }
+            return tool
+        }
+        return try AphroditeRemoteLibrarySnapshot(revision: manifest.revision, apps: apps).validated()
+    }
+}
+
 extension RemoteConnectionClient {
     static var live: Self {
         let runtime = RemoteConnectionRuntime(
@@ -23,8 +70,13 @@ extension RemoteConnectionClient {
             forgetMac: { try await runtime.forgetMac($0) },
             subscribe: { try await runtime.subscribe($0) },
             send: { try await runtime.send($0) },
+            fetchCodexUsage: { try await runtime.fetchCodexUsage($0) },
+            fetchClaudeUsage: { try await runtime.fetchClaudeUsage($0) },
             sendSoundMixer: { try await runtime.sendSoundMixer($0) },
             setSystemMonitorStreaming: { try await runtime.setSystemMonitorStreaming($0) },
+            setSoundMixerStreaming: { try await runtime.setSoundMixerStreaming($0) },
+            setBrightnessStreaming: { try await runtime.setBrightnessStreaming($0) },
+            sendBrightness: { try await runtime.sendBrightness($0) },
             setForegrounded: { await runtime.setForegrounded($0) }
         )
     }
@@ -122,6 +174,9 @@ actor RemoteConnectionRuntime {
             default:
                 return .browserUnavailable
             }
+        case let .dns(code) where code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied):
+            // A denied Local Network permission reaches the browser as a Bonjour policy error.
+            return .localNetworkAccessNeeded
         case .dns, .tls:
             return .browserUnavailable
         @unknown default:
@@ -196,6 +251,7 @@ actor RemoteConnectionRuntime {
     private var generation: UInt64 = 0
     private var foregrounded = true
     private var foregroundLifecycleGeneration: UInt64 = 0
+    private var aphroditeTransfers: [UUID: RemoteAphroditeTransferAccumulator] = [:]
 
     init(
         persistence: RemotePersistenceClient,
@@ -494,6 +550,7 @@ actor RemoteConnectionRuntime {
         generation &+= 1
         connectionTask?.cancel()
         connectionTask = nil
+        aphroditeTransfers.removeAll()
         let previousSession = session
         session = pending.session
         sessionToken = pending.sessionToken
@@ -505,7 +562,7 @@ actor RemoteConnectionRuntime {
         eventHub.yield(.catalog(pending.macID, pending.catalog.revision, pending.catalog.controls))
         try? await persistence.saveCatalog(pending.macID, pending.catalog.revision, pending.catalog.controls)
         pending.session.startReceiving()
-        try? await pending.session.requestSoundMixerIfSupported()
+        try? await pending.session.requestAphroditeLibraryIfSupported()
         if let previousSession {
             try? await previousSession.setSystemMonitorStreaming(false)
             await closeSession(previousSession)
@@ -649,6 +706,7 @@ actor RemoteConnectionRuntime {
         pairingTask = nil
         pairingToken = nil
         pendingRevocation = nil
+        aphroditeTransfers.removeAll()
 
         let detachedSession = selected?.id == id ? session : nil
         if selected?.id == id { selected = nil }
@@ -683,6 +741,46 @@ actor RemoteConnectionRuntime {
         return result
     }
 
+    func fetchCodexUsage(_ invocation: RemoteCodexUsageInvocation) async throws -> RemoteCodexUsageResult {
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        guard session.protocolVersion.supportsCodexUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let result = try await Self.withTimeout(.seconds(45)) {
+            try await session.fetchCodexUsage(invocation.request)
+        }
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              self.session === session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        return result
+    }
+
+    func fetchClaudeUsage(_ invocation: RemoteClaudeUsageInvocation) async throws -> RemoteClaudeUsageResult {
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        guard session.protocolVersion.supportsClaudeUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let result = try await Self.withTimeout(.seconds(45)) {
+            try await session.fetchClaudeUsage(invocation.request)
+        }
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              self.session === session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        return result
+    }
+
     func sendSoundMixer(_ command: RemoteSoundMixerCommand) async throws {
         guard let session else { throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline") }
         try await session.sendSoundMixer(command)
@@ -693,6 +791,25 @@ actor RemoteConnectionRuntime {
             throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline")
         }
         try await session.setSystemMonitorStreaming(enabled)
+    }
+
+    func setSoundMixerStreaming(_ enabled: Bool) async throws {
+        guard let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline")
+        }
+        try await session.setSoundMixerStreaming(enabled)
+    }
+
+    func setBrightnessStreaming(_ enabled: Bool) async throws {
+        guard let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline")
+        }
+        try await session.setBrightnessStreaming(enabled)
+    }
+
+    func sendBrightness(_ command: RemoteBrightnessCommand) async throws {
+        guard let session else { throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline") }
+        try await session.sendBrightness(command)
     }
 
     func setForegrounded(_ value: Bool) async {
@@ -837,7 +954,7 @@ actor RemoteConnectionRuntime {
                 eventHub.yield(.sessionStarted(mac.id, newSessionToken))
                 eventHub.yield(.authenticated(mac.id))
                 connected.startReceiving()
-                try? await connected.requestSoundMixerIfSupported()
+                try? await connected.requestAphroditeLibraryIfSupported()
                 do {
                     try await catalogRequest(connected)
                 } catch {
@@ -949,7 +1066,7 @@ actor RemoteConnectionRuntime {
                 eventHub.yield(.catalog(mac.id, catalog.revision, catalog.controls))
                 try? await persistence.saveCatalog(mac.id, catalog.revision, catalog.controls)
                 recovered.startReceiving()
-                try? await recovered.requestSoundMixerIfSupported()
+                try? await recovered.requestAphroditeLibraryIfSupported()
                 finalizingTransactionID = nil
                 return true
             } catch {
@@ -1044,8 +1161,29 @@ actor RemoteConnectionRuntime {
             eventHub.yield(.action(macID, result))
         case let .soundMixerSnapshot(snapshot):
             eventHub.yield(.soundMixer(macID, snapshot))
+        case let .brightnessSnapshot(snapshot):
+            eventHub.yield(.brightness(macID, snapshot))
         case let .systemMonitorSnapshot(snapshot):
             eventHub.yield(.systemMonitor(macID, snapshot))
+        case let .aphroditeLibraryManifest(manifest):
+            let currentRevision = (try? await persistence.loadAphroditeLibrary(macID))?.revision
+            guard currentRevision.map({ $0 < manifest.revision }) ?? true else { return }
+            aphroditeTransfers = [manifest.transferID: .init(manifest: manifest)]
+        case let .aphroditeDocumentChunk(chunk):
+            guard var transfer = aphroditeTransfers[chunk.transferID] else { return }
+            do {
+                try transfer.append(chunk)
+                aphroditeTransfers[chunk.transferID] = transfer
+            } catch {
+                aphroditeTransfers[chunk.transferID] = nil
+            }
+        case let .aphroditeTransferComplete(transferID):
+            guard let transfer = aphroditeTransfers.removeValue(forKey: transferID),
+                  let snapshot = try? transfer.complete() else { return }
+            do {
+                try await persistence.replaceAphroditeLibrary(macID, snapshot)
+                eventHub.yield(.aphroditeLibraryChanged(macID, snapshot.revision))
+            } catch { return }
         case let .catalogChanged(revision):
             eventHub.yield(.catalogInvalidated(macID, revision))
             guard let activeSession = session else { return }
@@ -1091,6 +1229,7 @@ actor RemoteConnectionRuntime {
             eventMacID: macID,
             eventToken: token
         ) else { return }
+        aphroditeTransfers.removeAll()
         eventHub.yield(.offline(macID, Self.safeMessage(error)))
         if let selected { await select(selected) }
     }
@@ -1485,6 +1624,8 @@ actor RemoteClientSession {
     private let event: @Sendable (RemoteMessage) async -> Void
     private let disconnected: @Sendable (Swift.Error) async -> Void
     private let actionResponses = RemoteActionResponses()
+    private let codexUsageResponses = RemoteCodexUsageResponses()
+    private let claudeUsageResponses = RemoteClaudeUsageResponses()
     private var receiveTask: Task<Void, Never>?
     private var closed = false
 
@@ -1623,16 +1764,39 @@ actor RemoteClientSession {
     }
 
     func requestCatalog() async throws { try await sendMessage(.catalogRequest) }
-    func requestSoundMixerIfSupported() async throws {
-        guard protocolVersion.supportsSoundMixerRemote else { return }
-        try await sendMessage(.soundMixerSnapshotRequest)
+    func requestAphroditeLibraryIfSupported() async throws {
+        guard protocolVersion.supportsAphroditeRemote else { return }
+        try await sendMessage(.aphroditeLibraryRequest)
     }
     func sendSoundMixer(_ command: RemoteSoundMixerCommand) async throws {
         guard protocolVersion.supportsSoundMixerRemote else {
             throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer remote control is unavailable on this Mac")
         }
+        if command.requiresSoundMixerTab, protocolVersion.supportsSoundMixerTabRemote == false {
+            throw Self.soundMixerUpgradeRequired
+        }
         try await sendMessage(.soundMixerCommand(command))
     }
+    func setSoundMixerStreaming(_ enabled: Bool) async throws {
+        guard protocolVersion.supportsSoundMixerTabRemote else { throw Self.soundMixerUpgradeRequired }
+        try await sendMessage(.soundMixerSubscriptionUpdate(enabled))
+    }
+    private static let soundMixerUpgradeRequired = RemoteProtocolError(
+        code: .upgradeRequired,
+        message: "Sound Mixer requires a newer OnlySwitch"
+    )
+    func setBrightnessStreaming(_ enabled: Bool) async throws {
+        guard protocolVersion.supportsBrightnessRemote else { throw Self.brightnessUpgradeRequired }
+        try await sendMessage(.brightnessSubscriptionUpdate(enabled))
+    }
+    func sendBrightness(_ command: RemoteBrightnessCommand) async throws {
+        guard protocolVersion.supportsBrightnessRemote else { throw Self.brightnessUpgradeRequired }
+        try await sendMessage(.brightnessCommand(command))
+    }
+    private static let brightnessUpgradeRequired = RemoteProtocolError(
+        code: .upgradeRequired,
+        message: "Brightness requires a newer OnlySwitch"
+    )
     func setSystemMonitorStreaming(_ enabled: Bool) async throws {
         guard protocolVersion.supportsSystemMonitorRemote else {
             throw RemoteProtocolError(
@@ -1684,6 +1848,36 @@ actor RemoteClientSession {
         }
     }
 
+    func fetchCodexUsage(_ request: RemoteCodexUsageRequest) async throws -> RemoteCodexUsageResult {
+        guard protocolVersion.supportsCodexUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let registration = await codexUsageResponses.register(request.requestID)
+        do {
+            try await sendMessage(.codexUsageRequest(request))
+            for try await result in registration.stream { return result }
+            throw CancellationError()
+        } catch {
+            await codexUsageResponses.cancel(request.requestID, token: registration.token)
+            throw error
+        }
+    }
+
+    func fetchClaudeUsage(_ request: RemoteClaudeUsageRequest) async throws -> RemoteClaudeUsageResult {
+        guard protocolVersion.supportsClaudeUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let registration = await claudeUsageResponses.register(request.requestID)
+        do {
+            try await sendMessage(.claudeUsageRequest(request))
+            for try await result in registration.stream { return result }
+            throw CancellationError()
+        } catch {
+            await claudeUsageResponses.cancel(request.requestID, token: registration.token)
+            throw error
+        }
+    }
+
     func close() async {
         guard closed == false else { return }
         closed = true
@@ -1691,6 +1885,8 @@ actor RemoteClientSession {
         receiveTask = nil
         await io.cancel()
         await actionResponses.finishAll()
+        await codexUsageResponses.finishAll()
+        await claudeUsageResponses.finishAll()
     }
 
     private func startReceiveLoopIfNeeded() {
@@ -1703,11 +1899,15 @@ actor RemoteClientSession {
             while Task.isCancelled == false {
                 let message = try await receiveMessage()
                 if case let .actionResult(result) = message { await actionResponses.resolve(result) }
+                if case let .codexUsageResult(result) = message { await codexUsageResponses.resolve(result) }
+                if case let .claudeUsageResult(result) = message { await claudeUsageResponses.resolve(result) }
                 await event(message)
             }
         } catch is CancellationError {
         } catch {
             await actionResponses.finishAll()
+            await codexUsageResponses.finishAll()
+            await claudeUsageResponses.finishAll()
             await disconnected(error)
         }
     }
@@ -1798,6 +1998,76 @@ private actor RemoteActionResponses {
         for continuation in values { continuation.finish(throwing: CancellationError()) }
     }
 }
+
+private actor RemoteCodexUsageResponses {
+    typealias Stream = AsyncThrowingStream<RemoteCodexUsageResult, Swift.Error>
+    struct Registration: Sendable {
+        let token: UUID
+        let stream: Stream
+    }
+    private struct Pending: Sendable {
+        let token: UUID
+        let continuation: Stream.Continuation
+    }
+    private var continuations: [UUID: Pending] = [:]
+    func register(_ id: UUID) -> Registration {
+        let (stream, continuation) = Stream.makeStream(of: RemoteCodexUsageResult.self, bufferingPolicy: .bufferingNewest(1))
+        let token = UUID()
+        continuations[id]?.continuation.finish(throwing: CancellationError())
+        continuations[id] = Pending(token: token, continuation: continuation)
+        continuation.onTermination = { [weak self] _ in Task { await self?.cancel(id, token: token) } }
+        return Registration(token: token, stream: stream)
+    }
+    func resolve(_ result: RemoteCodexUsageResult) {
+        guard let pending = continuations.removeValue(forKey: result.requestID) else { return }
+        pending.continuation.yield(result)
+        pending.continuation.finish()
+    }
+    func cancel(_ id: UUID, token: UUID) {
+        guard continuations[id]?.token == token else { return }
+        continuations.removeValue(forKey: id)?.continuation.finish(throwing: CancellationError())
+    }
+    func finishAll() {
+        let values = continuations.values
+        continuations.removeAll()
+        for pending in values { pending.continuation.finish(throwing: CancellationError()) }
+    }
+}
+private actor RemoteClaudeUsageResponses {
+    typealias Stream = AsyncThrowingStream<RemoteClaudeUsageResult, Swift.Error>
+    struct Registration: Sendable {
+        let token: UUID
+        let stream: Stream
+    }
+    private struct Pending: Sendable {
+        let token: UUID
+        let continuation: Stream.Continuation
+    }
+    private var continuations: [UUID: Pending] = [:]
+    func register(_ id: UUID) -> Registration {
+        let (stream, continuation) = Stream.makeStream(of: RemoteClaudeUsageResult.self, bufferingPolicy: .bufferingNewest(1))
+        let token = UUID()
+        continuations[id]?.continuation.finish(throwing: CancellationError())
+        continuations[id] = Pending(token: token, continuation: continuation)
+        continuation.onTermination = { [weak self] _ in Task { await self?.cancel(id, token: token) } }
+        return Registration(token: token, stream: stream)
+    }
+    func resolve(_ result: RemoteClaudeUsageResult) {
+        guard let pending = continuations.removeValue(forKey: result.requestID) else { return }
+        pending.continuation.yield(result)
+        pending.continuation.finish()
+    }
+    func cancel(_ id: UUID, token: UUID) {
+        guard continuations[id]?.token == token else { return }
+        continuations.removeValue(forKey: id)?.continuation.finish(throwing: CancellationError())
+    }
+    func finishAll() {
+        let values = continuations.values
+        continuations.removeAll()
+        for pending in values { pending.continuation.finish(throwing: CancellationError()) }
+    }
+}
+
 
 private enum RemoteDeviceIdentity {
     static let key = "remoteDeviceID"

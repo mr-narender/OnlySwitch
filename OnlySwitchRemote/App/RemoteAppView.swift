@@ -15,23 +15,66 @@ struct RemoteAppView: View {
             } else {
                 NavigationStack(path: $store.scope(state: \.path, action: \.path)) {
                     ZStack(alignment: .bottom) {
-                        DashboardBackground()
+                        if store.state.showsPaywallBackground(for: store.selectedPage) {
+                            RemotePaywallBackground()
+                        } else {
+                            DashboardBackground()
+                        }
 
                         TabView(selection: pageSelection) {
                             DashboardView(store: store.scope(state: \.dashboard, action: \.dashboard))
                                 .ignoresSafeArea(edges: .bottom)
                                 .tag(RemoteAppPage.controls)
-                            RemoteSystemMonitorView(store: store.scope(state: \.systemMonitor, action: \.systemMonitor))
-                                .ignoresSafeArea(edges: .bottom)
-                                .tag(RemoteAppPage.systemMonitor)
+                            if store.tabConfiguration.showsSystemMonitor {
+                                RemoteSystemMonitorView(store: store.scope(state: \.systemMonitor, action: \.systemMonitor))
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.systemMonitor)
+                            }
+                            if store.tabConfiguration.showsSoundMixer {
+                                RemotePlusGateView(accessStore: plusAccessStore) {
+                                    RemoteSoundMixerView(store: store.scope(state: \.soundMixer, action: \.soundMixer))
+                                }
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.soundMixer)
+                            }
+                            if store.tabConfiguration.showsBrightness {
+                                RemotePlusGateView(accessStore: plusAccessStore) {
+                                    RemoteBrightnessView(store: store.scope(state: \.brightness, action: \.brightness))
+                                }
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.brightness)
+                            }
+                            if store.tabConfiguration.showsCodexUsage {
+                                RemoteCodexUsageView(store: store.scope(state: \.codexUsage, action: \.codexUsage))
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.codexUsage)
+                            }
+                            if store.tabConfiguration.showsClaudeUsage {
+                                RemoteClaudeUsageView(store: store.scope(state: \.claudeUsage, action: \.claudeUsage))
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.claudeUsage)
+                            }
+                            if store.tabConfiguration.showsAphrodite {
+                                RemotePlusGateView(accessStore: plusAccessStore) {
+                                    RemoteAphroditeView(store: store.scope(state: \.aphrodite, action: \.aphrodite))
+                                }
+                                    .ignoresSafeArea(edges: .bottom)
+                                    .tag(RemoteAppPage.aphrodite)
+                            }
                         }
                         .tabViewStyle(.page(indexDisplayMode: .never))
                         .ignoresSafeArea(edges: .bottom)
 
-                        RemotePageTabBar(selection: pageSelection)
+                        RemotePageTabBar(selection: pageSelection, configuration: store.tabConfiguration)
                             .padding(.bottom, 4)
                     }
                         .toolbarBackground(.hidden, for: .navigationBar)
+                        .navigationDestination(isPresented: aphroditeAppPresented) {
+                            if let app = store.aphrodite.selectedApp {
+                                RemoteAphroditeAppView(app: app)
+                                    .background { DashboardBackground() }
+                            }
+                        }
                         .overlay {
                             if store.isLoading {
                                 ProgressView("Loading Macs")
@@ -55,25 +98,27 @@ struct RemoteAppView: View {
                                     selectedMacID: store.selectedMacID,
                                     select: { store.send(.macSelected($0)) }
                                 )
-                                Button(
-                                    store.selectedPage == .systemMonitor
-                                        ? "Configure System Monitor"
-                                        : "Configure Controls",
-                                    systemImage: "slider.horizontal.3"
-                                ) {
-                                    if store.selectedPage == .systemMonitor {
-                                        store.send(.systemMonitor(.delegate(.openConfiguration)))
-                                    } else {
-                                        store.send(.controlsConfigurationButtonTapped)
+                                if store.selectedPage == .controls || store.selectedPage == .systemMonitor {
+                                    Button(
+                                        store.selectedPage == .systemMonitor
+                                            ? "Configure System Monitor"
+                                            : "Configure Controls",
+                                        systemImage: "slider.horizontal.3"
+                                    ) {
+                                        if store.selectedPage == .systemMonitor {
+                                            store.send(.systemMonitor(.delegate(.openConfiguration)))
+                                        } else {
+                                            store.send(.controlsConfigurationButtonTapped)
+                                        }
                                     }
+                                    .labelStyle(.iconOnly)
+                                    .disabled(store.selectedMacID == nil)
+                                    .accessibilityHint(
+                                        store.selectedPage == .systemMonitor
+                                            ? "Choose and reorder System Monitor widgets"
+                                            : "Choose controls shown on the dashboard"
+                                    )
                                 }
-                                .labelStyle(.iconOnly)
-                                .disabled(store.selectedMacID == nil)
-                                .accessibilityHint(
-                                    store.selectedPage == .systemMonitor
-                                        ? "Choose and reorder System Monitor widgets"
-                                        : "Choose controls shown on the dashboard"
-                                )
                             }
                         }
                 } destination: { destinationStore in
@@ -87,6 +132,21 @@ struct RemoteAppView: View {
                     }
                 }
             }
+        }
+        .sheet(item: $store.scope(state: \.$controlsConfiguration, action: \.controlsConfiguration)) { configurationStore in
+            NavigationStack {
+                SettingsView(store: configurationStore)
+            }
+            .modifier(ConfigurationSheetPresentation())
+        }
+        .sheet(item: $store.scope(state: \.$monitorConfiguration, action: \.monitorConfiguration)) { configurationStore in
+            NavigationStack {
+                RemoteSystemMonitorConfigurationView(store: configurationStore)
+            }
+            .modifier(ConfigurationSheetPresentation())
+        }
+        .sheet(item: $store.scope(state: \.$paywall, action: \.paywall)) { paywallStore in
+            RemotePaywallView(store: paywallStore)
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if let issue = store.rootIssue {
@@ -111,9 +171,22 @@ struct RemoteAppView: View {
             }
         }
         .task { await store.send(.task).finish() }
+        .task { await store.send(.plusAccess(.task)).finish() }
         .onChange(of: scenePhase, initial: true) { _, phase in
             store.send(.scenePhaseChanged(phase == .active))
+            if phase == .active { store.send(.plusAccess(.refresh)) }
         }
+    }
+
+    private var plusAccessStore: StoreOf<RemotePlusAccessFeature> {
+        store.scope(state: \.plusAccess, action: \.plusAccess)
+    }
+
+    private var aphroditeAppPresented: Binding<Bool> {
+        Binding(
+            get: { store.selectedPage == .aphrodite && store.plusAccess.canAccess && store.aphrodite.selectedApp != nil },
+            set: { if !$0 { store.send(.aphrodite(.selectApp(nil))) } }
+        )
     }
 
     private var pageSelection: Binding<RemoteAppPage> {
@@ -121,5 +194,26 @@ struct RemoteAppView: View {
             get: { store.selectedPage },
             set: { store.send(.pageSelected($0)) }
         )
+    }
+}
+
+private struct ConfigurationSheetPresentation: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26, *) {
+            content
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(32)
+                .presentationBackground {
+                    Color.clear
+                        .glassEffect(.regular, in: .rect(cornerRadius: 32))
+                }
+        } else {
+            content
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(32)
+                .presentationBackground(.regularMaterial)
+        }
     }
 }

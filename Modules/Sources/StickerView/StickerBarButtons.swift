@@ -15,25 +15,37 @@ struct StickerBarButtons: View {
     var body: some View {
         WithPerceptionTracking {
             HStack {
-                Button(action: togglePreviewMode) {
-                    Image(systemName: store.previewMode ? "eye" : "keyboard.badge.eye")
-                        .foregroundStyle(strokeColor)
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help(store.previewMode ? "Edit".localized() : "Preview".localized())
-                .opacity(store.collaspeMode ? 0 : 1)
+                if !store.collaspeMode {
+                    Button(action: togglePreviewMode) {
+                        Image(systemName: store.previewMode ? "eye" : "keyboard.badge.eye")
+                            .foregroundStyle(strokeColor)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(store.previewMode ? "Edit".localized() : "Preview".localized())
 
-                Button(action: toggleTranslucent) {
-                    Image(store.canTranslucent ? "fill" : "translucent")
-                        .foregroundStyle(strokeColor)
-                        .frame(width: 20, height: 20)
-                        .contentShape(Rectangle())
+                    Button(action: toggleChecklist) {
+                        Image(systemName: "checklist")
+                            .foregroundStyle(strokeColor)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Checklist".localized() + " (⇧⌘L)")
+                    .accessibilityLabel("Checklist".localized())
+                    .opacity(store.previewMode ? 0 : 1)
+                    .disabled(store.previewMode)
+
+                    Button(action: toggleTranslucent) {
+                        Image(store.canTranslucent ? "fill" : "translucent")
+                            .foregroundStyle(strokeColor)
+                            .frame(width: 20, height: 20)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Translucent".localized())
                 }
-                .buttonStyle(.plain)
-                .help("Translucent".localized())
-                .opacity(store.collaspeMode ? 0 : 1)
 
                 Button(action: showColorSelector) {
                     Image(systemName: "paintpalette")
@@ -66,6 +78,10 @@ struct StickerBarButtons: View {
 
     private func togglePreviewMode() {
         store.send(.togglePreviewMode, animation: .easeInOut)
+    }
+
+    private func toggleChecklist() {
+        store.send(.toggleChecklist)
     }
 
     private func toggleTranslucent() {

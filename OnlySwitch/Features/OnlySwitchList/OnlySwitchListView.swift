@@ -5,12 +5,21 @@
 //  Created by Jacklandrin on 2021/11/29.
 //
 
+import AppKit
+import ComposableArchitecture
 import Defines
+import Design
 import Authenticator
 import SwiftUI
 import LaunchAtLogin
 import Switches
 import Utilities
+import OnlyAgent
+import Aphrodite
+import XcodeCleaner
+import AppUninstaller
+import Screenshots
+import DisplayBrightness
 
 enum Focusable: Hashable {
   case none
@@ -18,8 +27,12 @@ enum Focusable: Hashable {
 }
 
 struct OnlySwitchListView: View {
+    private let onPanelSizeChange: @MainActor (CGSize) -> Void
+    private let onOutsideClickRetentionChanged: @MainActor (Bool) -> Void
+    private let onSectionSelectionChanged: @MainActor (SectionBar.Section) -> Void
     @EnvironmentObject var switchVM:SwitchListVM
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @State private var distanceY:CGFloat = 0
     @State private var movingIndex = -1
     @State private var hoverIndex = -1
@@ -29,11 +42,32 @@ struct OnlySwitchListView: View {
     @ObservedObject private var languageManager = LanguageManager.sharedManager
     @FocusState var focusedBar: Focusable?
     @State private var selectedSection: SectionBar.Section = .controls
+    @State private var measuredContentHeight: CGFloat?
+    @State private var measuredChromeHeight: CGFloat = 144
+    @State private var maximumPanelHeight = NSScreen.main?.visibleFrame.height ?? CGFloat(700)
+    @State private var presentedPanelHeight: CGFloat?
+    @State private var aphroditeStore: StoreOf<AphroditeReducer>
+    private let screenshotSectionRevealStore = SettingsVM.shared.screenshotSectionRevealStore
+    @AppStorage(UserDefaults.Key.showClaudeUsageTab) private var showClaudeUsageTab = true
+    @AppStorage(UserDefaults.Key.showCodexUsageTab) private var showCodexUsageTab = true
+    @AppStorage(UserDefaults.Key.showSystemMonitorTab) private var showSystemMonitorTab = true
+    @AppStorage(UserDefaults.Key.showAphroditeTab) private var showAphroditeTab = true
+    @AppStorage(UserDefaults.Key.showXcodeCleanerTab) private var showXcodeCleanerTab = true
+    @AppStorage(UserDefaults.Key.showAppUninstallerTab) private var showAppUninstallerTab = true
+    @AppStorage(UserDefaults.Key.showScreenshotsTab) private var showScreenshotsTab = true
+    @AppStorage(UserDefaults.Key.showBrightnessTab) private var showBrightnessTab = true
 
     let columns = [
         GridItem(.fixed(Layout.popoverWidth - 40)),
         GridItem(.fixed(Layout.popoverWidth - 40))
     ]
+
+    init(onPanelSizeChange: @escaping @MainActor (CGSize) -> Void = { _ in }, onOutsideClickRetentionChanged: @escaping @MainActor (Bool) -> Void = { _ in }, onSectionSelectionChanged: @escaping @MainActor (SectionBar.Section) -> Void = { _ in }) {
+        self.onPanelSizeChange = onPanelSizeChange
+        self.onOutsideClickRetentionChanged = onOutsideClickRetentionChanged
+        self.onSectionSelectionChanged = onSectionSelectionChanged
+        _aphroditeStore = State(initialValue: Store(initialState: .init()) { AphroditeReducer() })
+    }
     
     var body: some View {
         ZStack {
@@ -46,20 +80,24 @@ struct OnlySwitchListView: View {
                         remove: true
                     )
             }
-            VStack {
-                bottomBar
-                    .offset(y: 20)
-                    .opacity(0.7)
-                    .isHidden(SwitchListAppearance(rawValue: switchVM.currentAppearance) == .single, remove: true)
-                
-                SystemMonitorSectionBar(
-                    sections: sections,
-                    selection: $selectedSection
-                )
-                // Keep this inset in the popover layout so it cannot be compressed
-                // away by the section bar's own intrinsic height.
-                .padding(.top, 12)
-                .padding(.bottom, 2)
+            VStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    if SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual {
+                        bottomBar.opacity(0.7).padding(.top, 20)
+                    }
+                    if SectionBar.shouldShowBar(for: sections) {
+                        SystemMonitorSectionBar(
+                            sections: sections,
+                            selection: $selectedSection,
+                            visibleSegmentLimit: SwitchListAppearance(rawValue: switchVM.currentAppearance) == .single
+                                ? SectionBar.singleColumnVisibleSegmentLimit : nil
+                        )
+                            .padding(.top, 12)
+                            .padding(.bottom, 2)
+                    }
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { proxy in Color.clear.preference(key: PanelChromeHeightKey.self, value: proxy.size.height) })
 
                 ScrollView {
                     Group {
@@ -76,21 +114,54 @@ struct OnlySwitchListView: View {
                             SoundMixerPanelView()
                         case .systemMonitor:
                             SystemMonitorPanelContainer()
+                        case .claudeUsage:
+                            if #available(macOS 14.0, *) {
+                                ClaudeUsagePanelContainer(managesScrolling: false)
+                            }
+                        case .codexUsage:
+                            if #available(macOS 14.0, *) {
+                                CodexUsagePanelContainer(managesScrolling: false)
+                            }
+                        case .xcodeCleaner:
+                            XcodeCleanerView(store: SettingsVM.shared.xcodeCleanerStore, managesScrolling: false, compactPresentation: true)
+                                .id(languageManager.currentLang)
+                        case .appUninstaller:
+                            AppUninstallerView(store: SettingsVM.shared.appUninstallerStore, managesScrolling: false, compactPresentation: true)
+                                .id(languageManager.currentLang)
+                        case .brightness:
+                            DisplayBrightnessView(store: SettingsVM.shared.brightnessStore, compact: true, managesScrolling: false)
+                                .id(languageManager.currentLang)
+                        case .screenshots:
+                            ScreenshotsView(store: SettingsVM.shared.screenshotsStore, compactPresentation: true)
+                                .id(languageManager.currentLang)
+                        case .aphrodite:
+                            if #available(macOS 26.0, *) {
+                                AphroditePanelView(
+                                    store: aphroditeStore,
+                                    maximumRunningHeight: max(0, maximumPanelHeight - measuredChromeHeight)
+                                )
+                            }
+                            else { AphroditeUnavailableView() }
                         }
                     }
+                    .background(GeometryReader { proxy in Color.clear.preference(key: PanelContentHeightKey.self, value: proxy.size.height) })
                 }
-                .frame(height: scrollViewHeight)
-                .padding(.top, 4)
+                .frame(height: presentedScrollHeight)
                 .padding(.bottom, 15)
                 .padding(.horizontal, 0)
-                if switchVM.showAds {
-                    recommendApp.opacity(0.8)
+                VStack(spacing: 8) {
+                    if switchVM.showAds {
+                        recommendApp.opacity(0.8)
+                    }
+                    if SwitchListAppearance(rawValue: switchVM.currentAppearance) == .single {
+                        bottomBar
+                    } else {
+                        Color.clear.frame(height: 20)
+                    }
                 }
-                
-                bottomBar
-                    .isHidden(SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual, remove: true)
-                
-                Spacer().frame(height:SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual ? 20 : 0)
+                .padding(.top, 8)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { proxy in Color.clear.preference(key: PanelChromeHeightKey.self, value: proxy.size.height) })
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .showPopover, object: nil)) { _ in
@@ -111,10 +182,45 @@ struct OnlySwitchListView: View {
         .onReceive(NotificationCenter.default.publisher(for: .toggleMenubarCollapse, object: nil)) { _ in
             switchVM.refreshSingleSwitchStatus(type: .hideMenubarIcons)
         }
+        .onChange(of: screenshotSectionRevealStore.pendingHost) { _, _ in
+            consumeScreenshotSectionReveal()
+        }
         .onChange(of: sections) { _ in
             reconcileSectionSelection()
         }
-        .frame(width: listWidth , height: scrollViewHeight + (switchVM.showAds ? 184 : 144))
+        .onChange(of: selectedSection) { section in
+            onSectionSelectionChanged(section)
+            onOutsideClickRetentionChanged(!section.allowsOutsideClickDismissal)
+        }
+        .onPreferenceChange(PanelContentHeightKey.self) { measuredContentHeight = $0.isFinite && $0 >= 0 ? $0 : nil }
+        .onPreferenceChange(PanelChromeHeightKey.self) { measuredChromeHeight = $0 + 15 }
+        .background(PanelScreenHeightReader { maximumPanelHeight = $0 })
+        .frame(width: listWidth, height: currentPanelHeight)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: PanelRenderedSizeKey.self, value: proxy.size)
+            }
+        )
+        .onPreferenceChange(PanelRenderedSizeKey.self) { size in
+            guard size.width > 0, size.height > 0 else { return }
+            onPanelSizeChange(size)
+        }
+        .onChange(of: adaptivePanelHeight) { updatePresentedPanelHeight(to: $0) }
+        .onChange(of: accessibilityReduceMotion) { _ in
+            updatePresentedPanelHeight(to: adaptivePanelHeight)
+        }
+        .onAppear {
+            consumeScreenshotSectionReveal()
+            presentedPanelHeight = adaptivePanelHeight
+            onSectionSelectionChanged(selectedSection)
+            onOutsideClickRetentionChanged(!selectedSection.allowsOutsideClickDismissal)
+        }
+    }
+
+    private func consumeScreenshotSectionReveal() {
+        guard screenshotSectionRevealStore.pendingHost == .popover else { return }
+        if sections.contains(.screenshots) { selectedSection = .screenshots }
+        screenshotSectionRevealStore.send(.consumed(.popover))
     }
     
     var singleSwitchList: some View {
@@ -366,7 +472,13 @@ struct OnlySwitchListView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 5) {
                 ForEach(Ads) { ad in
-                    Link(destination: ad.link) {
+                    Button {
+                        if let qrcode = ad.qrcode {
+                            QRCodeWindowController.shared.show(url: qrcode)
+                        } else if let link = ad.link {
+                            NSWorkspace.shared.open(link)
+                        }
+                    } label: {
                         AsyncImage(url: ad.imageURL) { phase in
                             if let image = phase.image {
                                 image
@@ -390,6 +502,7 @@ struct OnlySwitchListView: View {
                                 .opacity(0.5)
                         )
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -414,7 +527,7 @@ struct OnlySwitchListView: View {
             }).buttonStyle(.plain)
                 .padding(10)
                 .help(Text("Sort".localized()))
-                .isHidden(SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual)
+                .isHidden(selectedSection != .controls || SwitchListAppearance(rawValue: switchVM.currentAppearance) == .dual)
             
             Spacer()
             if playerItem.streamInfo == "" {
@@ -454,41 +567,26 @@ struct OnlySwitchListView: View {
     }
     
     
-    var scrollViewHeight: CGFloat {
-        let switchCount = visableSwitchCount + switchVM.shortcutsList.count + switchVM.evolutionList.count
-        var totalHeight = CGFloat(switchCount) * (Layout.singleSwitchHeight + 17)
-        //two columns
-        if switchVM.currentAppearance == SwitchListAppearance.dual.rawValue {
-            totalHeight = categoryHeight(count: switchVM.uncategoryItemList.count)
-            totalHeight += categoryHeight(count: switchVM.audioItemList.count)
-            totalHeight += categoryHeight(count: switchVM.cleanupItemList.count)
-            totalHeight += categoryHeight(count: switchVM.shortcutsList.count)
-            totalHeight += categoryHeight(count: switchVM.toolItemList.count)
-            totalHeight += categoryHeight(count: switchVM.evolutionList.count)
-            totalHeight -= 30.0
-        }
-
-        // The section picker is outside the scroll view. Reserve its height before capping the
-        // scroll area so long monitor/process lists stay inside the popover.
-        let height = min(totalHeight, switchVM.maxHeight - 192)
-        guard height > 0 else { return 300 }
-        return height
+    private var adaptivePanelHeight: CGFloat {
+        AdaptivePanelHeightPolicy(
+            minimumContentHeight: measuredContentHeight == nil ? 120 : 0,
+            chromeHeight: measuredChromeHeight,
+            maximumPanelHeight: maximumPanelHeight
+        ).panelHeight(for: measuredContentHeight)
     }
-    
-    func categoryHeight(count: Int) -> CGFloat {
-        var height = 0.0
-        if count > 0 {
-            height += 30.0
-            height += Double((count / 2)) * Layout.singleSwitchHeight
-            if count % 2 == 1 {
-                height += Layout.singleSwitchHeight
+
+    private var currentPanelHeight: CGFloat { presentedPanelHeight ?? adaptivePanelHeight }
+
+    private var presentedScrollHeight: CGFloat { max(0, currentPanelHeight - measuredChromeHeight) }
+
+    private func updatePresentedPanelHeight(to height: CGFloat) {
+        if accessibilityReduceMotion {
+            presentedPanelHeight = height
+        } else {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                presentedPanelHeight = height
             }
         }
-        return height
-    }
-    
-    var visableSwitchCount:Int {
-        return switchVM.switchList.filter{ !$0.isHidden }.count
     }
     
     func move(from source: IndexSet, to destination: Int) {
@@ -510,7 +608,15 @@ struct OnlySwitchListView: View {
     var sections: [SectionBar.Section] {
         SectionBar.sections(
             authenticator: shouldShowAuthenticatorPanel,
-            soundMixer: soundMixerVM.enabled
+            soundMixer: soundMixerVM.enabled,
+            systemMonitor: showSystemMonitorTab,
+            codexUsage: showCodexUsageTab,
+            claudeUsage: showClaudeUsageTab,
+            aphrodite: showAphroditeTab,
+            xcodeCleaner: showXcodeCleanerTab,
+            appUninstaller: showAppUninstallerTab,
+            screenshots: showScreenshotsTab,
+            brightness: showBrightnessTab
         )
     }
 
@@ -582,6 +688,21 @@ struct OnlySwitchListView: View {
             return focusedBar == .row(index: index)
         }
     }
+}
+
+private struct PanelContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct PanelChromeHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value += nextValue() }
+}
+
+private struct PanelRenderedSizeKey: PreferenceKey {
+    static let defaultValue = CGSize.zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
 }
 
 #if DEBUG

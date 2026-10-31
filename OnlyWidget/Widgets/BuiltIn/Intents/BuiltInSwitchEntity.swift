@@ -20,12 +20,12 @@ struct BuiltInSwitchEntity: AppEntity {
     }
 
     static var allSwitches: [BuiltInSwitchEntity] {
-        let switches = SwitchType.allCases.filter{ !exceptionSwitches.contains($0) }
-        return switches.map { BuiltInSwitchEntity(id: String($0.rawValue), type: $0) }
+        let switches = SwitchType.offeredCases.filter{ !exceptionSwitches.contains($0) }
+        return switches.map { BuiltInSwitchEntity(id: String($0.legacyIdentifier), type: $0) }
     }
 
     private static var exceptionSwitches: [SwitchType] {
-        [.topNotch, .airPods, .applemusic, .spotify, .screenTest, .authenticator]
+        [.topNotch, .airPods, .applemusic, .spotify, .screenTest, .authenticator, .xcodeCleaner, .appUninstaller, .tailscale]
     }
 }
 

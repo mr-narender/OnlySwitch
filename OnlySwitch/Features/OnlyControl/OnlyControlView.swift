@@ -12,9 +12,17 @@ import ComposableArchitecture
 import SwiftUI
 import OnlyControl
 import Defines
+import Design
 import Extensions
 import Foundation
 import SystemMonitor
+import OnlyAgent
+import Aphrodite
+import XcodeCleaner
+import AppUninstaller
+import Screenshots
+import DisplayBrightness
+import Utilities
 
 struct OnlyControlView: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -23,11 +31,24 @@ struct OnlyControlView: View {
     @ObservedObject private var authenticatorStore = AuthenticatorStore.shared
     @ObservedObject private var soundMixerVM = SoundMixerVM.shared
     @State private var currentDate = Date()
+    @ObservedObject private var languageManager = LanguageManager.sharedManager
+    @State private var aphroditeStore: StoreOf<AphroditeReducer>
+    private let screenshotSectionRevealStore = SettingsVM.shared.screenshotSectionRevealStore
+    @State private var sectionViewportHeight: CGFloat?
+    @AppStorage(UserDefaults.Key.showClaudeUsageTab) private var showClaudeUsageTab = true
+    @AppStorage(UserDefaults.Key.showCodexUsageTab) private var showCodexUsageTab = true
+    @AppStorage(UserDefaults.Key.showSystemMonitorTab) private var showSystemMonitorTab = true
+    @AppStorage(UserDefaults.Key.showAphroditeTab) private var showAphroditeTab = true
+    @AppStorage(UserDefaults.Key.showXcodeCleanerTab) private var showXcodeCleanerTab = true
+    @AppStorage(UserDefaults.Key.showAppUninstallerTab) private var showAppUninstallerTab = true
+    @AppStorage(UserDefaults.Key.showScreenshotsTab) private var showScreenshotsTab = true
+    @AppStorage(UserDefaults.Key.showBrightnessTab) private var showBrightnessTab = true
     
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     init(store: StoreOf<OnlyControlReducer>) {
         self.store = store
+        _aphroditeStore = State(initialValue: Store(initialState: .init()) { AphroditeReducer() })
     }
 
     var body: some View {
@@ -45,15 +66,28 @@ struct OnlyControlView: View {
                 }
 
                 VStack(spacing: 0) {
-                    OnlyControlSectionBar(
-                        sections: sections,
-                        selection: selectedSection
-                    )
+                    if SectionBar.shouldShowBar(for: sections) {
+                        OnlyControlSectionBar(
+                            sections: sections,
+                            selection: selectedSection
+                        )
                         .padding(.horizontal, 20)
                         .padding(.top, 8)
                         .padding(.bottom, 4)
+                    }
 
-                    sectionContent
+                    ScrollView {
+                        sectionContent
+                    }
+                    .frame(maxHeight: .infinity)
+                    .background(GeometryReader { proxy in
+                        Color.clear.preference(key: OnlyControlSectionViewportHeightKey.self, value: proxy.size.height)
+                    })
+
+                    if store.selectedSection != .aphrodite {
+                        footer
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .cornerRadius(15)
@@ -64,12 +98,26 @@ struct OnlyControlView: View {
             .ignoresSafeArea()
             .padding(10)
             .task {
+                store.send(.availableSectionsChanged(sections))
                 store.send(.task)
             }
             .onChange(of: sections) { availableSections in
                 store.send(.availableSectionsChanged(availableSections))
             }
+            .onAppear(perform: consumeScreenshotSectionReveal)
+            .onChange(of: screenshotSectionRevealStore.pendingHost) { _, _ in
+                consumeScreenshotSectionReveal()
+            }
+            .onPreferenceChange(OnlyControlSectionViewportHeightKey.self) { height in
+                sectionViewportHeight = height.isFinite && height > 0 ? height : nil
+            }
         }
+    }
+
+    private func consumeScreenshotSectionReveal() {
+        guard screenshotSectionRevealStore.pendingHost == .onlyControl else { return }
+        if sections.contains(.screenshots) { store.send(.selectedSectionChanged(.screenshots)) }
+        screenshotSectionRevealStore.send(.consumed(.onlyControl))
     }
 
     @ViewBuilder
@@ -83,30 +131,36 @@ struct OnlyControlView: View {
                 soundMixerPage
             case .systemMonitor:
                 systemMonitorPage
+            case .claudeUsage:
+                claudeUsagePage
+            case .codexUsage:
+                codexUsagePage
+            case .xcodeCleaner:
+                XcodeCleanerView(store: SettingsVM.shared.xcodeCleanerStore, managesScrolling: false)
+                    .id(languageManager.currentLang)
+            case .appUninstaller:
+                AppUninstallerView(store: SettingsVM.shared.appUninstallerStore, managesScrolling: false)
+                    .id(languageManager.currentLang)
+            case .brightness:
+                DisplayBrightnessView(store: SettingsVM.shared.brightnessStore, managesScrolling: false)
+                    .id(languageManager.currentLang)
+            case .screenshots:
+                ScreenshotsView(store: SettingsVM.shared.screenshotsStore)
+                    .id(languageManager.currentLang)
+            case .aphrodite:
+                aphroditePage
         }
     }
 
     private var authenticatorPage: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                AuthenticatorPanelView(initiallyExpanded: true)
-                    .padding(.vertical, 8)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            footer
+            AuthenticatorPanelView(initiallyExpanded: true).padding(.vertical, 8)
         }
     }
 
     private var soundMixerPage: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                SoundMixerPanelView(initiallyExpanded: true)
-                    .padding(.vertical, 8)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            footer
+            SoundMixerPanelView().padding(.vertical, 8)
         }
     }
 
@@ -116,23 +170,39 @@ struct OnlyControlView: View {
                 .padding(.horizontal, 30)
                 .padding(.top, 12)
 
-            DashboardView(store: store.scope(state: \.dashboard, action: \.dashboardAction))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            footer
+            DashboardView(store: store.scope(state: \.dashboard, action: \.dashboardAction), managesScrolling: false)
         }
     }
 
     private var systemMonitorPage: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                SystemMonitorPanelView(
-                    store: store.scope(state: \.systemMonitor, action: \.systemMonitor)
-                )
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            SystemMonitorPanelView(store: store.scope(state: \.systemMonitor, action: \.systemMonitor))
+        }
+    }
 
-            footer
+    private var codexUsagePage: some View {
+        VStack(spacing: 0) {
+            if #available(macOS 14.0, *) {
+                CodexUsagePanelContainer(managesScrolling: false)
+            }
+        }
+    }
+
+    private var claudeUsagePage: some View {
+        VStack(spacing: 0) {
+            if #available(macOS 14.0, *) {
+                ClaudeUsagePanelContainer(managesScrolling: false)
+            }
+        }
+    }
+
+    private var aphroditePage: some View {
+        Group {
+            if #available(macOS 26.0, *) {
+                AphroditePanelView(store: aphroditeStore, maximumRunningHeight: sectionViewportHeight)
+            } else {
+                AphroditeUnavailableView()
+            }
         }
     }
 
@@ -202,7 +272,15 @@ struct OnlyControlView: View {
     private var sections: [SectionBar.Section] {
         SectionBar.sections(
             authenticator: authenticatorStore.enabled,
-            soundMixer: soundMixerVM.enabled
+            soundMixer: soundMixerVM.enabled,
+            systemMonitor: showSystemMonitorTab,
+            codexUsage: showCodexUsageTab,
+            claudeUsage: showClaudeUsageTab,
+            aphrodite: showAphroditeTab,
+            xcodeCleaner: showXcodeCleanerTab,
+            appUninstaller: showAppUninstallerTab,
+            screenshots: showScreenshotsTab,
+            brightness: showBrightnessTab
         )
     }
 }
@@ -253,7 +331,7 @@ private struct OnlyControlSectionBar: View {
                 selection = section
             }
         } label: {
-            Label(section.title, systemImage: section.symbolName)
+            Label { Text(section.title) } icon: { SectionBarIcon(section: section, logoSize: 12) }
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(selection == section ? selectedForegroundStyle : .secondary)
                 .frame(maxWidth: .infinity, minHeight: 20)
@@ -308,6 +386,13 @@ final class OnlyControlWindow: NSWindow, NSWindowDelegate {
     } withDependencies: {
         $0.systemMonitor = MacSystemMonitorCollector.liveClient()
     }
+    var preventsOutsideClickDismissal: Bool {
+        !onlyControlStore.selectedSection.allowsOutsideClickDismissal
+    }
+    var selectedSection: SectionBar.Section {
+        onlyControlStore.selectedSection
+    }
+
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
     private var hideTask: Task<Void, Never>?
@@ -400,7 +485,6 @@ final class OnlyControlWindow: NSWindow, NSWindowDelegate {
     private func restoreFrame() {
         let restoredSavedFrame = setFrameUsingName(Self.frameAutosaveName)
         setContentSize(Self.contentSize)
-
         guard let screen = screenContainingWindow ?? NSScreen.main else {
             center()
             setFrameAutosaveName(Self.frameAutosaveName)
@@ -427,7 +511,7 @@ final class OnlyControlWindow: NSWindow, NSWindowDelegate {
             matching: [.leftMouseDown, .rightMouseDown]
         ) { [weak self] _ in
             Task { @MainActor in
-                self?.hide()
+                self?.dismissForOutsideClick()
             }
         }
 
@@ -457,6 +541,11 @@ final class OnlyControlWindow: NSWindow, NSWindowDelegate {
               !outsideClickExclusionWindowNumbers.contains(event.windowNumber) else {
             return
         }
+        dismissForOutsideClick()
+    }
+
+    private func dismissForOutsideClick() {
+        guard !preventsOutsideClickDismissal else { return }
         hide()
     }
 
@@ -470,4 +559,9 @@ final class OnlyControlWindow: NSWindow, NSWindowDelegate {
 /// normal events before the background drag behavior applies.
 private final class OnlyControlHostingView: NSHostingView<OnlyControlView> {
     override var mouseDownCanMoveWindow: Bool { true }
+}
+
+private struct OnlyControlSectionViewportHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }

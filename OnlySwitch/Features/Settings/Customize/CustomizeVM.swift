@@ -18,16 +18,25 @@ class CustomizeVM:ObservableObject {
     @Published var errorInfo = ""
     @Published var showErrorToast = false
     init() {
-        let state = SwitchManager.shared.getAllSwitchState()
-        for index in 0..<switchTypeCount {
-            let bitwise:UInt64 = 1 << index
-            let toggle = (state & bitwise == 0) ? false : true
-            allSwitches.append(CustomizeItem(type: SwitchType(rawValue: bitwise)!, toggle: toggle, error: { [weak self] info in
+        let visibleTypes = SwitchManager.shared.visibleSwitchTypes()
+        for type in SwitchType.offeredCases {
+            let isVisible = visibleTypes.contains(type)
+            allSwitches.append(CustomizeItem(type: type, toggle: isVisible, error: { [weak self] info in
                 guard let strongSelf = self else {return}
                 strongSelf.errorInfo = info
                 strongSelf.showErrorToast = true
             }))
         }
+    }
+
+    func sections(matching query: String, currentLanguage: String)
+        -> [(section: BuiltInSwitchSection, items: [CustomizeItem])]
+    {
+        BuiltInSwitchCatalog.sections(
+            items: allSwitches,
+            matching: query,
+            locale: Locale(identifier: currentLanguage)
+        )
     }
 }
 
@@ -41,29 +50,15 @@ class CustomizeItem: ObservableObject {
     {
         didSet {
             if toggle {
-                if type == .radioStation {
-                    SwitchManager.shared.register(aswitch: RadioStationSwitch.shared)
-                } else {
-                    SwitchManager.shared.register(aswitch: type.getNewSwitchInstance())
-                }
-                
+                SwitchManager.shared.setVisible(true, for: type)
             } else {
                 if SwitchManager.shared.shownSwitchCount < 5 {
                     error("At least remain 4 switches")
                     toggle = true
                     return
                 }
-                if type == .radioStation {
-                    RadioStationSwitch.shared.playerItem.isPlaying = false
-                }
-                SwitchManager.shared.unregister(for: type)
+                SwitchManager.shared.setVisible(false, for: type)
             }
-            
-            let state = SwitchManager.shared.getAllSwitchState()
-            let newState:UInt64 = type.rawValue ^ state
-            let newStateStr = String(newState)
-            UserDefaults.standard.set(newStateStr, forKey: UserDefaults.Key.SwitchState)
-            UserDefaults.standard.synchronize()
         }
     }
     
@@ -75,7 +70,7 @@ class CustomizeItem: ObservableObject {
         self.iconImage = barInfo.onImage?.resizeMaintainingAspectRatio(withSize: NSSize(width: 50, height: 50))
         self.toggle = toggle
         self.error = error
-        self.keyboardShortcutName = KeyboardShortcuts.Name(rawValue: String(type.rawValue))!
+        self.keyboardShortcutName = KeyboardShortcuts.Name(rawValue: String(type.legacyIdentifier))!
     }
 
     @MainActor

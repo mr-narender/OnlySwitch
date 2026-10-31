@@ -1,9 +1,14 @@
 import ComposableArchitecture
 import Foundation
 
-enum RemoteAppPage: Hashable, Sendable {
+enum RemoteAppPage: Hashable, Sendable, CaseIterable {
     case controls
     case systemMonitor
+    case soundMixer
+    case brightness
+    case codexUsage
+    case claudeUsage
+    case aphrodite
 }
 
 @Reducer
@@ -12,11 +17,21 @@ struct RemoteAppFeature {
     struct State: Equatable {
         var path = StackState<Path.State>()
         var requiredGlobalSettings: GlobalSettingsFeature.State?
+        @Presents var controlsConfiguration: SettingsFeature.State?
+        @Presents var monitorConfiguration: RemoteSystemMonitorConfigurationFeature.State?
+        @Presents var paywall: RemotePaywallFeature.State?
         var pairedMacs: IdentifiedArrayOf<PairedMac> = []
         var selectedMacID: UUID?
         var dashboard = DashboardFeature.State()
         var selectedPage: RemoteAppPage = .controls
+        var tabConfiguration: RemoteTabConfiguration
         var systemMonitor = RemoteSystemMonitorFeature.State()
+        var soundMixer = RemoteSoundMixerFeature.State()
+        var brightness = RemoteBrightnessFeature.State()
+        var codexUsage = RemoteCodexUsageFeature.State()
+        var claudeUsage = RemoteClaudeUsageFeature.State()
+        var aphrodite = RemoteAphroditeFeature.State()
+        var plusAccess = RemotePlusAccessFeature.State()
         var systemMonitorLayoutGeneration: UInt64 = 0
         var connectedMacIDs: Set<UUID> = []
         var activeSessionID: UUID?
@@ -27,6 +42,7 @@ struct RemoteAppFeature {
         var isLoading = false
         var loadGeneration: UInt64 = 0
         var isForegrounded = true
+        var isKeepingScreenAwake = RemoteIdleTimerClient.preferenceSeed()
         var lifecycleGeneration: UInt64 = 0
         let persistenceWriterID: UUID
         var nextPersistenceSequence: UInt64 = 0
@@ -34,14 +50,20 @@ struct RemoteAppFeature {
         var isPersisting = false
         var rootIssue: RootIssue?
 
+        func showsPaywallBackground(for page: RemoteAppPage) -> Bool {
+            page.requiresPlus && plusAccess.canAccess == false
+        }
+
         init(
             hasCompletedInitialSetup: Bool,
+            tabConfiguration: RemoteTabConfiguration = RemoteTabPreferencesClient.preferenceSeed(),
             persistenceWriterID: UUID = UUID()
         ) {
             self.hasCompletedInitialSetup = hasCompletedInitialSetup
+            self.tabConfiguration = tabConfiguration
             self.persistenceWriterID = persistenceWriterID
             if hasCompletedInitialSetup == false {
-                requiredGlobalSettings = .init(isSetupRequired: true)
+                requiredGlobalSettings = .init(isSetupRequired: true, tabConfiguration: tabConfiguration)
             }
         }
 
@@ -114,9 +136,19 @@ struct RemoteAppFeature {
         case scenePhaseChanged(Bool)
         case lifecycleResponse(UInt64)
         case pageSelected(RemoteAppPage)
+        case membershipTapped
         case dashboard(DashboardFeature.Action)
         case systemMonitor(RemoteSystemMonitorFeature.Action)
+        case soundMixer(RemoteSoundMixerFeature.Action)
+        case brightness(RemoteBrightnessFeature.Action)
+        case codexUsage(RemoteCodexUsageFeature.Action)
+        case claudeUsage(RemoteClaudeUsageFeature.Action)
+        case aphrodite(RemoteAphroditeFeature.Action)
+        case plusAccess(RemotePlusAccessFeature.Action)
         case requiredGlobalSettings(GlobalSettingsFeature.Action)
+        case controlsConfiguration(PresentationAction<SettingsFeature.Action>)
+        case monitorConfiguration(PresentationAction<RemoteSystemMonitorConfigurationFeature.Action>)
+        case paywall(PresentationAction<RemotePaywallFeature.Action>)
         case path(StackActionOf<Path>)
     }
     @Reducer
@@ -128,11 +160,18 @@ struct RemoteAppFeature {
 
     @Dependency(\.remoteConnection) var connection
     @Dependency(\.remotePersistence) var persistence
+    @Dependency(\.remoteIdleTimer) var idleTimer
     private enum CancelID { case load, lifecycle, connectionEvents, metadataRefresh }
 
     var body: some ReducerOf<Self> {
         Scope(state: \.dashboard, action: \.dashboard) { DashboardFeature() }
         Scope(state: \.systemMonitor, action: \.systemMonitor) { RemoteSystemMonitorFeature() }
+        Scope(state: \.soundMixer, action: \.soundMixer) { RemoteSoundMixerFeature() }
+        Scope(state: \.brightness, action: \.brightness) { RemoteBrightnessFeature() }
+        Scope(state: \.codexUsage, action: \.codexUsage) { RemoteCodexUsageFeature() }
+        Scope(state: \.claudeUsage, action: \.claudeUsage) { RemoteClaudeUsageFeature() }
+        Scope(state: \.aphrodite, action: \.aphrodite) { RemoteAphroditeFeature() }
+        Scope(state: \.plusAccess, action: \.plusAccess) { RemotePlusAccessFeature() }
         Reduce { state, action in
             switch action {
             case .task:
@@ -161,7 +200,11 @@ struct RemoteAppFeature {
                     }
                 } catch: { _, _ in }
                     .cancellable(id: CancelID.connectionEvents, cancelInFlight: true)
-                return .merge(load, events)
+                let keepScreenAwake = state.isForegrounded && state.isKeepingScreenAwake
+                let idleTimerEffect = Effect<Action>.run { [idleTimer] _ in
+                    await idleTimer.setIdleTimerDisabled(keepScreenAwake)
+                }
+                return .merge(load, events, idleTimerEffect)
 
             case let .launchResponse(generation, .failure):
                 guard generation == state.loadGeneration else { return .none }
@@ -184,11 +227,13 @@ struct RemoteAppFeature {
                 ) else {
                     state.selectedMacID = nil
                     state.path.removeAll()
-                    state.requiredGlobalSettings = .init(isSetupRequired: true)
+                    state.requiredGlobalSettings = .init(isSetupRequired: true, tabConfiguration: state.tabConfiguration)
                     syncSettingsState(&state)
                     state.hasCompletedInitialSetup = false
                     var effects: [Effect<Action>] = [
-                        .run { [connection] _ in await connection.select(nil) }
+                        .run { [connection] _ in await connection.select(nil) },
+                        .send(.codexUsage(.contextChanged(macID: nil, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: nil, sessionID: nil))),
+                        .send(.aphrodite(.selectedMacChanged(nil)))
                     ]
                     if hadCompletedInitialSetup || response.selectedMacID != nil {
                         effects.append(beginPersistence(
@@ -209,7 +254,9 @@ struct RemoteAppFeature {
                 syncSettingsState(&state)
                 var effects: [Effect<Action>] = [
                     .run { [connection] _ in await connection.select(selected) },
-                    loadSystemMonitorLayout(for: selected.id, state: &state)
+                    loadSystemMonitorLayout(for: selected.id, state: &state),
+                    .send(.codexUsage(.contextChanged(macID: selected.id, sessionID: state.activeSessionID))), .send(.claudeUsage(.contextChanged(macID: selected.id, sessionID: state.activeSessionID))),
+                    .send(.aphrodite(.selectedMacChanged(selected.id)))
                 ]
                 if hadCompletedInitialSetup == false || response.selectedMacID != selected.id {
                     effects.append(beginPersistence(
@@ -227,7 +274,7 @@ struct RemoteAppFeature {
                     ? snapshot.authenticatedSessionID
                     : nil
                 syncSettingsState(&state)
-                return .none
+                return .merge(.send(.codexUsage(.contextChanged(macID: state.selectedMacID, sessionID: state.activeSessionID))), .send(.claudeUsage(.contextChanged(macID: state.selectedMacID, sessionID: state.activeSessionID))))
 
             case let .connectionEvent(event):
                 state.connectionEventRevision &+= 1
@@ -256,31 +303,37 @@ struct RemoteAppFeature {
                     syncSettingsState(&state)
                     return forwardToDashboard(event, alongside: refreshPairedMetadata(state: &state), state: state)
                 case let .revoked(id):
+                    guard id == state.selectedMacID else { return forwardToDashboard(event, state: state) }
                     state.activeSessionID = nil
                     if state.connectedMacIDs.contains(id) {
                         state.connectedMacIDs.removeAll()
                         syncSettingsState(&state)
                     }
                     updateConnectionStatus(.needsPairing, for: id, state: &state)
-                    return forwardToDashboard(event, alongside: refreshPairedMetadata(state: &state), state: state)
+                    return .merge(forwardToDashboard(event, alongside: refreshPairedMetadata(state: &state), state: state), .send(.codexUsage(.contextChanged(macID: state.selectedMacID, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: state.selectedMacID, sessionID: nil))))
                 case let .offline(id, reason):
+                    guard id == state.selectedMacID else { return forwardToDashboard(event, state: state) }
                     state.activeSessionID = nil
                     if state.connectedMacIDs.contains(id) {
                         state.connectedMacIDs.removeAll()
                         syncSettingsState(&state)
                     }
                     updateConnectionStatus(.offline(reason), for: id, state: &state)
-                    return forwardToDashboard(event, state: state)
+                    return .merge(forwardToDashboard(event, state: state), .send(.codexUsage(.contextChanged(macID: state.selectedMacID, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: state.selectedMacID, sessionID: nil))))
                 case let .connecting(id):
+                    guard id == state.selectedMacID else { return forwardToDashboard(event, state: state) }
                     state.activeSessionID = nil
                     state.connectedMacIDs.removeAll()
                     syncSettingsState(&state)
                     updateConnectionStatus(.connecting, for: id, state: &state)
-                    return forwardToDashboard(event, state: state)
-                case let .sessionStarted(_, sessionID):
+                    return .merge(forwardToDashboard(event, state: state), .send(.codexUsage(.contextChanged(macID: state.selectedMacID, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: state.selectedMacID, sessionID: nil))))
+                case let .sessionStarted(macID, sessionID):
+                    guard macID == state.selectedMacID else { return forwardToDashboard(event, state: state) }
                     state.activeSessionID = sessionID
-                    return forwardToDashboard(event, state: state)
-                case .catalog, .catalogInvalidated, .statusSnapshot, .status, .action, .soundMixer, .systemMonitor:
+                    return .merge(forwardToDashboard(event, state: state), .send(.codexUsage(.contextChanged(macID: macID, sessionID: sessionID))), .send(.claudeUsage(.contextChanged(macID: macID, sessionID: sessionID))))
+                case let .aphroditeLibraryChanged(macID, _):
+                    return .send(.aphrodite(.libraryChanged(macID)))
+                case .catalog, .catalogInvalidated, .statusSnapshot, .status, .action, .soundMixer, .systemMonitor, .brightness:
                     return forwardToDashboard(event, state: state)
                 }
 
@@ -310,11 +363,17 @@ struct RemoteAppFeature {
                    state.pairedMacs[id: selectedMacID] == nil {
                     state.selectedMacID = state.pairedMacs.first?.id
                     state.connectedMacIDs.removeAll()
+                    state.activeSessionID = nil
                 }
                 syncSettingsState(&state)
-                guard previousSelectedMacID != state.selectedMacID,
-                      let selectedMacID = state.selectedMacID else { return .none }
-                return loadSystemMonitorLayout(for: selectedMacID, state: &state)
+                guard previousSelectedMacID != state.selectedMacID else { return .none }
+                guard let selectedMacID = state.selectedMacID else {
+                    return .merge(.send(.codexUsage(.contextChanged(macID: nil, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: nil, sessionID: nil))))
+                }
+                return .merge(
+                    loadSystemMonitorLayout(for: selectedMacID, state: &state),
+                    .send(.codexUsage(.contextChanged(macID: selectedMacID, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: selectedMacID, sessionID: nil)))
+                )
 
             case let .systemMonitorLayoutLoaded(generation, macID, result):
                 guard generation == state.systemMonitorLayoutGeneration,
@@ -352,17 +411,23 @@ struct RemoteAppFeature {
 
             case .globalSettingsButtonTapped:
                 guard state.requiredGlobalSettings == nil else { return .none }
-                state.path.append(.globalSettings(.init()))
+                state.path.append(.globalSettings(.init(
+                    tabConfiguration: state.tabConfiguration,
+                    isKeepingScreenAwake: state.isKeepingScreenAwake,
+                    pairedMacs: state.pairedMacs,
+                    selectedMacID: state.selectedMacID,
+                    connectionStatuses: connectionStatuses(state)
+                )))
                 return .none
 
             case .controlsConfigurationButtonTapped:
                 guard state.requiredGlobalSettings == nil,
                       state.selectedMacID != nil else { return .none }
-                state.path.append(.controlsConfiguration(.init(
+                state.controlsConfiguration = .init(
                     pairedMacs: state.pairedMacs,
                     selectedMacID: state.selectedMacID,
                     connectionStatuses: connectionStatuses(state)
-                )))
+                )
                 return .none
 
             case let .macSelected(id):
@@ -373,6 +438,7 @@ struct RemoteAppFeature {
                 state.isForegrounded = foregrounded
                 state.lifecycleGeneration &+= 1
                 let generation = state.lifecycleGeneration
+                let keepScreenAwake = foregrounded && state.isKeepingScreenAwake
                 var effects: [Effect<Action>] = state.path.ids.compactMap { id in
                     switch state.path[id: id] {
                     case .globalSettings:
@@ -392,11 +458,18 @@ struct RemoteAppFeature {
                 if state.requiredGlobalSettings != nil {
                     effects.append(.send(.requiredGlobalSettings(.foregroundChanged(foregrounded))))
                 }
+                if state.controlsConfiguration != nil {
+                    effects.append(.send(.controlsConfiguration(.presented(.foregroundChanged(foregrounded)))))
+                }
                 if foregrounded == false, state.systemMonitor.isVisible {
                     effects.append(.send(.systemMonitor(.visibilityChanged(false))))
                 } else if foregrounded, state.selectedPage == .systemMonitor {
                     effects.append(.send(.systemMonitor(.visibilityChanged(true))))
                 }
+                effects.append(soundMixerVisibility(state: state))
+                effects.append(brightnessVisibility(state: state))
+                effects.append(.send(.codexUsage(.visibilityChanged(foregrounded && state.selectedPage == .codexUsage))))
+                effects.append(.send(.claudeUsage(.visibilityChanged(foregrounded && state.selectedPage == .claudeUsage))))
                 effects.append(
                     .run { [connection] send in
                         await connection.setForegrounded(foregrounded)
@@ -404,6 +477,9 @@ struct RemoteAppFeature {
                     }
                     .cancellable(id: CancelID.lifecycle, cancelInFlight: true)
                 )
+                effects.append(.run { [idleTimer] _ in
+                    await idleTimer.setIdleTimerDisabled(keepScreenAwake)
+                })
                 return .merge(effects)
 
             case let .lifecycleResponse(generation):
@@ -411,9 +487,42 @@ struct RemoteAppFeature {
                 return .none
 
             case let .pageSelected(page):
-                guard state.selectedPage != page else { return .none }
+                guard state.tabConfiguration.isVisible(page), state.selectedPage != page else { return .none }
                 state.selectedPage = page
-                return .send(.systemMonitor(.visibilityChanged(page == .systemMonitor)))
+                return .merge(
+                    .send(.systemMonitor(.visibilityChanged(page == .systemMonitor && state.isForegrounded))),
+                    soundMixerVisibility(state: state),
+                    brightnessVisibility(state: state),
+                    .send(.codexUsage(.visibilityChanged(page == .codexUsage && state.isForegrounded))), .send(.claudeUsage(.visibilityChanged(page == .claudeUsage && state.isForegrounded))),
+                    page.requiresPlus ? .send(.plusAccess(.refresh)) : .none
+                )
+
+            case let .paywall(.presented(.restoreResponse(.success(entitlement)))),
+                 let .paywall(.presented(.purchaseResponse(.success(.purchased(entitlement))))):
+                return .send(.plusAccess(.entitlementUpdated(entitlement)))
+
+            case .plusAccess(.entitlementResponse), .plusAccess(.entitlementUpdated),
+                 .plusAccess(.entitlementExpired):
+                let entitlement = state.plusAccess.entitlement
+                state.paywall?.entitlement = entitlement
+                if case .active = entitlement { state.paywall?.purchasePending = false }
+                let canAccess = state.plusAccess.canAccess
+                let soundMixerEntitlement: Effect<Action> = state.soundMixer.isEntitled == canAccess
+                    ? .none
+                    : .send(.soundMixer(.entitlementChanged(canAccess)))
+                let brightnessEntitlement: Effect<Action> = state.brightness.isEntitled == canAccess
+                    ? .none
+                    : .send(.brightness(.entitlementChanged(canAccess)))
+                guard state.paywall != nil else { return .merge(soundMixerEntitlement, brightnessEntitlement) }
+                return .merge(
+                    soundMixerEntitlement,
+                    brightnessEntitlement,
+                    .send(.paywall(.presented(.authoritativeEntitlementUpdated(entitlement))))
+                )
+
+            case .membershipTapped:
+                state.paywall = .init()
+                return .none
 
             case .dashboard(.delegate(.openSettings)):
                 return .send(.controlsConfigurationButtonTapped)
@@ -421,7 +530,7 @@ struct RemoteAppFeature {
             case .systemMonitor(.delegate(.openConfiguration)):
                 guard let selectedMacID = state.selectedMacID else { return .none }
                 let layout = state.systemMonitor.layout ?? .default(macID: selectedMacID)
-                state.path.append(.monitorConfiguration(.init(layout: layout)))
+                state.monitorConfiguration = .init(layout: layout)
                 return .none
 
             case let .dashboard(.delegate(.selectedMac(mac))):
@@ -435,25 +544,93 @@ struct RemoteAppFeature {
                 syncDashboardState(&state)
                 return .send(.dashboard(.task))
 
+            case let .requiredGlobalSettings(.delegate(.tabConfigurationChanged(configuration))),
+                 let .path(.element(_, action: .globalSettings(.delegate(.tabConfigurationChanged(configuration))))):
+                state.tabConfiguration = configuration
+                state.requiredGlobalSettings?.tabConfiguration = configuration
+                for id in state.path.ids {
+                    if case var .globalSettings(settings) = state.path[id: id] {
+                        settings.tabConfiguration = configuration
+                        state.path[id: id] = .globalSettings(settings)
+                    }
+                }
+                guard configuration.isVisible(state.selectedPage) == false else { return .none }
+                return .send(.pageSelected(.controls))
+
             case let .requiredGlobalSettings(.delegate(.paired(mac))):
                 state.requiredGlobalSettings = nil
                 state.hasCompletedInitialSetup = true
                 return paired(mac, state: &state)
 
+            case .requiredGlobalSettings(.delegate(.openMembership)):
+                state.paywall = .init()
+                return .none
+
+            case let .requiredGlobalSettings(.keepScreenAwakeToggled(isEnabled)):
+                state.isKeepingScreenAwake = isEnabled
+                let keepScreenAwake = state.isForegrounded && isEnabled
+                return .run { [idleTimer] _ in
+                    await idleTimer.setIdleTimerDisabled(keepScreenAwake)
+                }
+
             case let .path(.element(_, action: .globalSettings(.delegate(.paired(mac))))):
                 state.hasCompletedInitialSetup = true
                 return paired(mac, state: &state)
 
+            case .path(.element(_, action: .globalSettings(.delegate(.openMembership)))):
+                state.paywall = .init()
+                return .none
+
+            case let .path(.element(_, action: .globalSettings(.keepScreenAwakeToggled(isEnabled)))):
+                state.isKeepingScreenAwake = isEnabled
+                let keepScreenAwake = state.isForegrounded && isEnabled
+                return .run { [idleTimer] _ in
+                    await idleTimer.setIdleTimerDisabled(keepScreenAwake)
+                }
+
+            case let .path(.element(_, action: .globalSettings(.delegate(.selectedMacChanged(mac))))):
+                return select(mac, state: &state)
+
+            case let .path(.element(_, action: .controlsConfiguration(.delegate(.layoutChanged(layout))))):
+                guard state.dashboard.isActive else { return .none }
+                return .send(.dashboard(.layoutChanged(layout)))
+
+            case let .controlsConfiguration(.presented(.delegate(.layoutChanged(layout)))):
+                guard state.dashboard.isActive else { return .none }
+                return .send(.dashboard(.layoutChanged(layout)))
+
+            case let .monitorConfiguration(.presented(.delegate(.layoutChanged(layout)))):
+                guard state.selectedMacID == layout.macID else { return .none }
+                state.systemMonitor.layout = layout
+                return .none
+
+            case let .path(.element(_, action: .globalSettings(.delegate(.macForgotten(id))))):
+                state.pairedMacs.remove(id: id)
+                state.connectedMacIDs.remove(id)
+                invalidateMetadataRefresh(state: &state)
+                syncSettingsState(&state)
+                return .cancel(id: CancelID.metadataRefresh)
+
+            case .path(.element(_, action: .globalSettings(.delegate(.allMacsRemoved)))):
+                state.pairedMacs.removeAll()
+                state.connectedMacIDs.removeAll()
+                state.selectedMacID = nil
+                state.path.removeAll()
+                state.requiredGlobalSettings = .init(isSetupRequired: true, tabConfiguration: state.tabConfiguration)
+                state.hasCompletedInitialSetup = false
+                invalidateMetadataRefresh(state: &state)
+                return .merge(
+                    .cancel(id: CancelID.metadataRefresh),
+                    clearedSelection(state: &state)
+                )
+
+            // Kept for restoring older navigation stacks that may still emit these delegates.
             case let .path(.element(_, action: .controlsConfiguration(.delegate(.paired(mac))))):
                 state.hasCompletedInitialSetup = true
                 return paired(mac, state: &state)
 
             case let .path(.element(_, action: .controlsConfiguration(.delegate(.selectedMacChanged(mac))))):
                 return select(mac, state: &state)
-
-            case let .path(.element(_, action: .controlsConfiguration(.delegate(.layoutChanged(layout))))):
-                guard state.dashboard.isActive else { return .none }
-                return .send(.dashboard(.layoutChanged(layout)))
 
             case let .path(.element(_, action: .controlsConfiguration(.delegate(.macForgotten(id))))):
                 state.pairedMacs.remove(id: id)
@@ -467,7 +644,7 @@ struct RemoteAppFeature {
                 state.connectedMacIDs.removeAll()
                 state.selectedMacID = nil
                 state.path.removeAll()
-                state.requiredGlobalSettings = .init(isSetupRequired: true)
+                state.requiredGlobalSettings = .init(isSetupRequired: true, tabConfiguration: state.tabConfiguration)
                 state.hasCompletedInitialSetup = false
                 invalidateMetadataRefresh(state: &state)
                 return .merge(
@@ -480,11 +657,15 @@ struct RemoteAppFeature {
                 state.systemMonitor.layout = layout
                 return .none
 
-            case .dashboard, .systemMonitor, .requiredGlobalSettings, .path:
+            case .dashboard, .systemMonitor, .soundMixer, .brightness, .codexUsage, .claudeUsage, .aphrodite, .plusAccess, .requiredGlobalSettings,
+                 .controlsConfiguration, .monitorConfiguration, .paywall, .path:
                 return .none
             }
         }
         .ifLet(\.requiredGlobalSettings, action: \.requiredGlobalSettings) { GlobalSettingsFeature() }
+        .ifLet(\.$controlsConfiguration, action: \.controlsConfiguration) { SettingsFeature() }
+        .ifLet(\.$monitorConfiguration, action: \.monitorConfiguration) { RemoteSystemMonitorConfigurationFeature() }
+        .ifLet(\.$paywall, action: \.paywall) { RemotePaywallFeature() }
         .forEach(\.path, action: \.path)
     }
 
@@ -510,7 +691,9 @@ struct RemoteAppFeature {
         var effects: [Effect<Action>] = [
             .cancel(id: CancelID.metadataRefresh),
             .concatenate(persistenceEffect, adoptionEffect),
-            loadSystemMonitorLayout(for: mac.id, state: &state)
+            loadSystemMonitorLayout(for: mac.id, state: &state),
+            .send(.codexUsage(.contextChanged(macID: mac.id, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: mac.id, sessionID: nil))),
+            .send(.aphrodite(.selectedMacChanged(mac.id)))
         ]
         if state.dashboard.isActive { effects.append(.send(.dashboard(.task))) }
         return .merge(effects)
@@ -526,6 +709,8 @@ struct RemoteAppFeature {
         syncSettingsState(&state)
         state.rootIssue = nil
         var effects: [Effect<Action>] = [
+            .send(.codexUsage(.contextChanged(macID: mac.id, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: mac.id, sessionID: nil))),
+            .send(.aphrodite(.selectedMacChanged(mac.id))),
             beginPersistence(
                 selectedMacID: mac.id,
                 hasCompletedInitialSetup: true,
@@ -555,6 +740,8 @@ struct RemoteAppFeature {
                 state: &state
             ),
             .run { [connection] _ in await connection.select(nil) },
+            .send(.codexUsage(.contextChanged(macID: nil, sessionID: nil))), .send(.claudeUsage(.contextChanged(macID: nil, sessionID: nil))),
+            .send(.aphrodite(.selectedMacChanged(nil))),
             .merge(activeActionIDs.map {
                 .cancel(id: DashboardFeature.CancelID.action($0))
             })
@@ -608,10 +795,20 @@ struct RemoteAppFeature {
         for id: UUID,
         state: inout State
     ) {
+        if state.controlsConfiguration != nil {
+            state.controlsConfiguration?.connectionStatuses[id] = status
+        }
         for pathID in state.path.ids {
-            guard case var .controlsConfiguration(settings) = state.path[id: pathID] else { continue }
-            settings.connectionStatuses[id] = status
-            state.path[id: pathID] = .controlsConfiguration(settings)
+            switch state.path[id: pathID] {
+            case var .globalSettings(settings):
+                settings.connectionStatuses[id] = status
+                state.path[id: pathID] = .globalSettings(settings)
+            case var .controlsConfiguration(settings):
+                settings.connectionStatuses[id] = status
+                state.path[id: pathID] = .controlsConfiguration(settings)
+            case .monitorConfiguration, nil:
+                continue
+            }
         }
     }
 
@@ -628,14 +825,33 @@ struct RemoteAppFeature {
 
     private func syncSettingsState(_ state: inout State) {
         let statuses = connectionStatuses(state)
+        let pairedMacs = state.pairedMacs
+        let selectedMacID = state.selectedMacID
+        if var controlsConfiguration = state.controlsConfiguration {
+            controlsConfiguration.pairedMacs = pairedMacs
+            controlsConfiguration.selectedMacID = selectedMacID
+            controlsConfiguration.connectionStatuses = statuses
+            state.controlsConfiguration = controlsConfiguration
+        }
         for id in state.path.ids {
-            guard case var .controlsConfiguration(settings) = state.path[id: id] else { continue }
-            settings.pairedMacs = state.pairedMacs
-            settings.selectedMacID = state.selectedMacID
-            settings.connectionStatuses = statuses
-            state.path[id: id] = .controlsConfiguration(settings)
+            switch state.path[id: id] {
+            case var .globalSettings(settings):
+                settings.pairedMacs = state.pairedMacs
+                settings.selectedMacID = state.selectedMacID
+                settings.connectionStatuses = statuses
+                state.path[id: id] = .globalSettings(settings)
+            case var .controlsConfiguration(settings):
+                settings.pairedMacs = state.pairedMacs
+                settings.selectedMacID = state.selectedMacID
+                settings.connectionStatuses = statuses
+                state.path[id: id] = .controlsConfiguration(settings)
+            case .monitorConfiguration, nil:
+                continue
+            }
         }
         syncSystemMonitorState(&state)
+        syncSoundMixerState(&state)
+        syncBrightnessState(&state)
         guard state.dashboard.isActive else { return }
         syncDashboardState(&state)
     }
@@ -714,7 +930,77 @@ struct RemoteAppFeature {
         if state.systemMonitor.isVisible {
             effects.append(.send(.systemMonitor(.connectionEvent(event))))
         }
+        if state.soundMixer.isVisible {
+            effects.append(.send(.soundMixer(.connectionEvent(event))))
+        }
+        if state.brightness.isVisible {
+            effects.append(.send(.brightness(.connectionEvent(event))))
+        }
         return .merge(effects)
+    }
+
+    private func soundMixerVisibility(state: State) -> Effect<Action> {
+        let isVisible = state.isForegrounded && state.selectedPage == .soundMixer
+        guard state.soundMixer.isVisible != isVisible else { return .none }
+        return .send(.soundMixer(.visibilityChanged(isVisible)))
+    }
+
+    private func syncSoundMixerState(_ state: inout State) {
+        let selectedID = state.selectedMacID
+        if state.soundMixer.selectedMacID != selectedID {
+            state.soundMixer.selectedMacID = selectedID
+            state.soundMixer.snapshot = nil
+            state.soundMixer.expandedAppIDs = []
+            state.soundMixer.draftVolumes = [:]
+            state.soundMixer.draftGains = [:]
+            state.soundMixer.activeDrags = []
+            state.soundMixer.availabilityMessage = nil
+            state.soundMixer.commandError = nil
+            state.soundMixer.isStreamRequested = false
+            state.soundMixer.isStreaming = false
+        }
+        guard let selectedID else {
+            state.soundMixer.connectionState = .idle
+            return
+        }
+        if state.pairedMacs[id: selectedID]?.requiresPairing == true {
+            state.soundMixer.connectionState = .revoked
+        } else if state.connectedMacIDs.contains(selectedID) {
+            state.soundMixer.connectionState = .authenticated
+        } else if state.soundMixer.connectionState != .connecting {
+            state.soundMixer.connectionState = .offline(nil)
+        }
+    }
+
+    private func brightnessVisibility(state: State) -> Effect<Action> {
+        let isVisible = state.isForegrounded && state.selectedPage == .brightness
+        guard state.brightness.isVisible != isVisible else { return .none }
+        return .send(.brightness(.visibilityChanged(isVisible)))
+    }
+
+    private func syncBrightnessState(_ state: inout State) {
+        let selectedID = state.selectedMacID
+        if state.brightness.selectedMacID != selectedID {
+            state.brightness.selectedMacID = selectedID
+            state.brightness.snapshot = nil
+            state.brightness.draftLevels = [:]
+            state.brightness.activeDrags = []
+            state.brightness.availabilityMessage = nil
+            state.brightness.commandError = nil
+            state.brightness.isStreamRequested = false
+            state.brightness.isStreaming = false
+        }
+        guard let selectedID else {
+            state.brightness.connectionState = .idle
+            return
+        }
+        if state.pairedMacs[id: selectedID]?.requiresPairing == true {
+            state.brightness.connectionState = .revoked
+        } else if state.connectedMacIDs.contains(selectedID) {
+            state.brightness.connectionState = .authenticated
+        } else if state.brightness.connectionState != .connecting {
+            state.brightness.connectionState = .offline(nil)
+        }
     }
 
     private func loadSystemMonitorLayout(for macID: UUID, state: inout State) -> Effect<Action> {

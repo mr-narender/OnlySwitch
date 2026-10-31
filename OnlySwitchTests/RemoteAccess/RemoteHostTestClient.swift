@@ -179,6 +179,10 @@ actor RemoteHostTestClient {
         try await sendEncrypted(.systemMonitorSubscriptionUpdate(enabled))
     }
 
+    func sendMessage(_ message: RemoteMessage) async throws {
+        try await sendEncrypted(message)
+    }
+
     func nextStatus(for id: RemoteControlID) async throws -> RemoteControlStatus {
         while true {
             switch try await receiveEncrypted() {
@@ -203,6 +207,22 @@ actor RemoteHostTestClient {
 
     func nextMessage() async throws -> RemoteMessage {
         try await receiveEncrypted()
+    }
+
+    func requestCodexUsage(_ request: RemoteCodexUsageRequest) async throws -> RemoteCodexUsageResult {
+        try await sendEncrypted(.codexUsageRequest(request))
+        guard case let .codexUsageResult(result) = try await receiveEncrypted() else {
+            throw RemoteProtocolError(code: .invalidFrame, message: "Expected Codex usage result")
+        }
+        return result
+    }
+
+    func requestClaudeUsage(_ request: RemoteClaudeUsageRequest) async throws -> RemoteClaudeUsageResult {
+        try await sendEncrypted(.claudeUsageRequest(request))
+        guard case let .claudeUsageResult(result) = try await receiveEncrypted() else {
+            throw RemoteProtocolError(code: .invalidFrame, message: "Expected Claude usage result")
+        }
+        return result
     }
 
     func sendTransaction(_ message: RemoteMessage) async throws {

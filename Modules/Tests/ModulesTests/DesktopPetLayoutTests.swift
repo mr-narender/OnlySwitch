@@ -4,6 +4,42 @@ import Testing
 @testable import DesktopPet
 
 struct DesktopPetLayoutTests {
+    @Test func refreshPolicyUsesFifteenFramesPerSecond() {
+        #expect(DesktopPetRefreshPolicy.minimumInterval == 1.0 / 15.0)
+    }
+
+    @Test func refreshPolicyPausesOnlyWhenAnimationCannotBePresented() {
+        #expect(
+            !DesktopPetRefreshPolicy.isPaused(
+                isActive: true,
+                isDragging: false,
+                reduceMotion: false
+            )
+        )
+
+        #expect(
+            DesktopPetRefreshPolicy.isPaused(
+                isActive: false,
+                isDragging: false,
+                reduceMotion: false
+            )
+        )
+        #expect(
+            DesktopPetRefreshPolicy.isPaused(
+                isActive: true,
+                isDragging: true,
+                reduceMotion: false
+            )
+        )
+        #expect(
+            DesktopPetRefreshPolicy.isPaused(
+                isActive: true,
+                isDragging: false,
+                reduceMotion: true
+            )
+        )
+    }
+
     @Test func pomodoroStatePreservesPhaseAndCountdown() {
         let state = DesktopPetPomodoroState(phase: .focus, remainingTime: "24:59")
 
@@ -15,6 +51,104 @@ struct DesktopPetLayoutTests {
                 remainingTime: "24:59"
             )
         )
+    }
+
+    @Test func playbackUsesNowPlayingAndControlLanesAboveThePet() {
+        let size = DesktopPetMetrics.canvasSize(for: nil, showsPlayback: true)
+
+        #expect(size == CGSize(width: 152, height: 212))
+    }
+
+    @Test func playbackAndPomodoroLanesCanCoexist() {
+        let pomodoro = DesktopPetPomodoroState(phase: .focus, remainingTime: "24:59")
+        let size = DesktopPetMetrics.canvasSize(for: pomodoro, showsPlayback: true)
+
+        #expect(size == CGSize(width: 152, height: 256))
+        #expect(
+            DesktopPetMetrics.canvasSize(for: pomodoro, showsPlayback: false)
+                == DesktopPetMetrics.pomodoroCanvasSize
+        )
+    }
+
+    @Test func playbackMotionBobsAndSwaysInsteadOfIdleMotion() {
+        let date = Date(timeIntervalSinceReferenceDate: 0.15)
+        let idle = DesktopPetMotion.values(
+            at: date,
+            pomodoroState: nil,
+            isActive: true,
+            isDragging: false,
+            reduceMotion: false
+        )
+        let playing = DesktopPetMotion.values(
+            at: date,
+            pomodoroState: nil,
+            isActive: true,
+            isDragging: false,
+            reduceMotion: false,
+            isMusicPlaying: true
+        )
+        let later = DesktopPetMotion.values(
+            at: date.addingTimeInterval(0.3),
+            pomodoroState: nil,
+            isActive: true,
+            isDragging: false,
+            reduceMotion: false,
+            isMusicPlaying: true
+        )
+
+        #expect(playing.verticalOffset != idle.verticalOffset)
+        #expect(playing.horizontalOffset != 0)
+        #expect(playing.rotationDegrees != 0)
+        #expect(later != playing)
+        #expect(later.musicPulse != playing.musicPulse)
+        #expect(playing.musicCounterPulse != playing.musicPulse)
+        #expect((0...1).contains(playing.musicPulse))
+        #expect((0...1).contains(playing.musicCounterPulse))
+    }
+
+    @Test(arguments: [
+        (isActive: false, isDragging: false, reduceMotion: false),
+        (isActive: true, isDragging: true, reduceMotion: false),
+        (isActive: true, isDragging: false, reduceMotion: true)
+    ])
+    func playbackMotionStopsWhenAnimationCannotBePresented(
+        state: (isActive: Bool, isDragging: Bool, reduceMotion: Bool)
+    ) {
+        let values = DesktopPetMotion.values(
+            at: Date(timeIntervalSinceReferenceDate: 0.15),
+            pomodoroState: nil,
+            isActive: state.isActive,
+            isDragging: state.isDragging,
+            reduceMotion: state.reduceMotion,
+            isMusicPlaying: true
+        )
+
+        #expect(values == .still)
+    }
+
+    @Test(arguments: [DesktopPetPomodoroPhase.focus, .breakTime])
+    func playbackMotionPreservesPomodoroBadge(phase: DesktopPetPomodoroPhase) {
+        let date = Date(timeIntervalSinceReferenceDate: 0.6)
+        let state = DesktopPetPomodoroState(phase: phase, remainingTime: "10:00")
+        let timerOnly = DesktopPetMotion.values(
+            at: date,
+            pomodoroState: state,
+            isActive: true,
+            isDragging: false,
+            reduceMotion: false
+        )
+        let playing = DesktopPetMotion.values(
+            at: date,
+            pomodoroState: state,
+            isActive: true,
+            isDragging: false,
+            reduceMotion: false,
+            isMusicPlaying: true
+        )
+
+        #expect(playing.badgeScale == timerOnly.badgeScale)
+        #expect(playing.badgeGlowOpacity == timerOnly.badgeGlowOpacity)
+        #expect(playing != timerOnly)
     }
 
     @Test func focusMotionPulsesWithoutSway() {
