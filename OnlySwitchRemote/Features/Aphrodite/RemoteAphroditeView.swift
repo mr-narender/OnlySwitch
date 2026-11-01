@@ -8,18 +8,7 @@ struct RemoteAphroditeView: View {
 
     var body: some View {
         Group {
-            if let app = store.selectedApp {
-                VStack(spacing: 0) {
-                    HStack {
-                        Button("Back", systemImage: "chevron.left") { store.send(.selectApp(nil)) }
-                        Spacer()
-                        Text(app.title).font(.headline).lineLimit(1)
-                        Spacer()
-                        Color.clear.frame(width: 44, height: 44)
-                    }.padding(.horizontal)
-                    RemoteAphroditeRunner(tool: app)
-                }
-            } else if store.isLoading && store.apps.isEmpty {
+            if store.isLoading && store.apps.isEmpty {
                 ProgressView("Loading personal tools")
             } else if store.selectedMacID == nil {
                 ContentUnavailableView("Select a Mac", systemImage: "desktopcomputer", description: Text("Choose a paired Mac to view its synced Aphrodite personal tools."))
@@ -56,6 +45,18 @@ struct RemoteAphroditeView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task { await store.send(.task).finish() }
+    }
+}
+
+/// Full-screen mini app page pushed from the root navigation stack, above the page tab bar.
+struct RemoteAphroditeAppView: View {
+    let app: AphroditePersonalTool
+
+    var body: some View {
+        RemoteAphroditeRunner(tool: app)
+            .ignoresSafeArea(edges: .bottom)
+            .navigationTitle(app.title)
+            .navigationBarTitleDisplayMode(.inline)
     }
 }
 

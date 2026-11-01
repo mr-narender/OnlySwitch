@@ -7,6 +7,7 @@
 
 import ComposableArchitecture
 import Defines
+import Extensions
 import SwiftUI
 
 struct StickerBarView: View {
@@ -25,8 +26,7 @@ struct StickerBarView: View {
                 StickerCollapsedTitle(
                     content: store.stickerContent,
                     isCollapsed: store.collaspeMode,
-                    strokeColor: Color(nsColor: store.stickerColor.stroke),
-                    doubleTapAction: toggleCollapseMode
+                    strokeColor: Color(nsColor: store.stickerColor.stroke)
                 )
 
                 if store.isHovering {
@@ -34,9 +34,13 @@ struct StickerBarView: View {
                 }
             }
             .background(
-                Rectangle()
-                    .foregroundStyle(Color(nsColor: store.stickerColor.bar))
-                    .frame(height: 20)
+                ZStack {
+                    Rectangle()
+                        .foregroundStyle(Color(nsColor: store.stickerColor.bar))
+                    // The whole bar drags the window; buttons above still receive clicks.
+                    WindowDragView(onDoubleClick: toggleCollapseMode)
+                }
+                .frame(height: 20)
             )
             .shadow(color: Color(.sRGBLinear, white: 0, opacity: 0.2), radius: 3)
         }
