@@ -4,11 +4,60 @@ import Network
 import RemoteCore
 import RemoteTransport
 
+struct RemoteAphroditeTransferAccumulator: Sendable {
+    let manifest: AphroditeRemoteLibraryManifest
+    private var chunks: [UUID: [Int: Data]] = [:]
+
+    init(manifest: AphroditeRemoteLibraryManifest) {
+        self.manifest = manifest
+    }
+
+    mutating func append(_ chunk: AphroditeRemoteDocumentChunk) throws {
+        guard chunk.transferID == manifest.transferID,
+              let descriptor = manifest.documents.first(where: { $0.appID == chunk.appID }),
+              chunk.index < descriptor.chunkCount,
+              chunks[chunk.appID]?[chunk.index] == nil,
+              (chunks[chunk.appID]?.values.reduce(0) { $0 + $1.count } ?? 0) + chunk.data.count <= descriptor.byteCount else {
+            throw AphroditeRemoteValidationError.invalidChunk
+        }
+        chunks[chunk.appID, default: [:]][chunk.index] = chunk.data
+    }
+
+    func complete() throws -> AphroditeRemoteLibrarySnapshot {
+        let decoder = JSONDecoder()
+        let apps = try manifest.documents.map { descriptor in
+            guard let documentChunks = chunks[descriptor.appID], documentChunks.count == descriptor.chunkCount else {
+                throw AphroditeRemoteValidationError.invalidChunk
+            }
+            var bytes = Data()
+            bytes.reserveCapacity(descriptor.byteCount)
+            for index in 0..<descriptor.chunkCount {
+                guard let chunk = documentChunks[index], bytes.count + chunk.count <= descriptor.byteCount else {
+                    throw AphroditeRemoteValidationError.invalidChunk
+                }
+                bytes.append(chunk)
+            }
+            guard bytes.count == descriptor.byteCount,
+                  Data(SHA256.hash(data: bytes)) == descriptor.sha256 else {
+                throw AphroditeRemoteValidationError.invalidDescriptor
+            }
+            let tool = try decoder.decode(AphroditePersonalTool.self, from: bytes)
+            guard tool.id == descriptor.appID, tool.title == descriptor.title, tool.updatedAt == descriptor.updatedAt else {
+                throw AphroditeRemoteValidationError.invalidDescriptor
+            }
+            return tool
+        }
+        return try AphroditeRemoteLibrarySnapshot(revision: manifest.revision, apps: apps).validated()
+    }
+}
+
 extension RemoteConnectionClient {
     static var live: Self {
         let runtime = RemoteConnectionRuntime(
             persistence: .live,
-            keychain: .live
+            keychain: .live,
+            screenshotCache: .live,
+            backgroundTasks: .live
         )
         return Self(
             discover: { runtime.makeDiscoveryStream() },
@@ -23,9 +72,19 @@ extension RemoteConnectionClient {
             forgetMac: { try await runtime.forgetMac($0) },
             subscribe: { try await runtime.subscribe($0) },
             send: { try await runtime.send($0) },
+            fetchCodexUsage: { try await runtime.fetchCodexUsage($0) },
+            fetchClaudeUsage: { try await runtime.fetchClaudeUsage($0) },
             sendSoundMixer: { try await runtime.sendSoundMixer($0) },
             setSystemMonitorStreaming: { try await runtime.setSystemMonitorStreaming($0) },
-            setForegrounded: { await runtime.setForegrounded($0) }
+            setSoundMixerStreaming: { try await runtime.setSoundMixerStreaming($0) },
+            setBrightnessStreaming: { try await runtime.setBrightnessStreaming($0) },
+            sendBrightness: { try await runtime.sendBrightness($0) },
+            setScreenshotsStreaming: { try await runtime.setScreenshotsStreaming($0) },
+            fetchScreenshotThumbnails: { try await runtime.fetchScreenshotThumbnails($0) },
+            fetchScreenshotImage: { try await runtime.fetchScreenshotImage($0) },
+            deleteScreenshots: { try await runtime.deleteScreenshots($0) },
+            setForegrounded: { await runtime.setForegrounded($0) },
+            withBackgroundTransferHold: { try await runtime.withBackgroundTransferHold($0) }
         )
     }
 }
@@ -122,6 +181,9 @@ actor RemoteConnectionRuntime {
             default:
                 return .browserUnavailable
             }
+        case let .dns(code) where code == DNSServiceErrorType(kDNSServiceErr_PolicyDenied):
+            // A denied Local Network permission reaches the browser as a Bonjour policy error.
+            return .localNetworkAccessNeeded
         case .dns, .tls:
             return .browserUnavailable
         @unknown default:
@@ -146,6 +208,9 @@ actor RemoteConnectionRuntime {
     private let reconnectStarted: @Sendable () async -> Void
     private let actionTimeout: Duration
     private let actionDeadline: ActionDeadline
+    private let screenshotCache: RemoteScreenshotCacheClient
+    private let backgroundTasks: RemoteBackgroundTaskClient
+    private let backgroundTransferGracePeriod: Duration
     private let pairingDurableCommitCompleted: @Sendable () async -> Void
     private let localStateMutations = RemoteLocalStateMutationCoordinator()
     private var browser: NWBrowser?
@@ -196,6 +261,17 @@ actor RemoteConnectionRuntime {
     private var generation: UInt64 = 0
     private var foregrounded = true
     private var foregroundLifecycleGeneration: UInt64 = 0
+    /// Original downloads running inside `withBackgroundTransferHold`.
+    private var activeBackgroundTransfers = 0
+    /// While backgrounded with transfers in flight, the session's close is deferred until they
+    /// finish, the grace period ends, or iOS withdraws the background time.
+    private struct BackgroundHold {
+        let id: UUID
+        let timeout: Task<Void, Never>
+        var task: RemoteBackgroundTaskClient.Token?
+    }
+    private var backgroundHold: BackgroundHold?
+    private var aphroditeTransfers: [UUID: RemoteAphroditeTransferAccumulator] = [:]
 
     init(
         persistence: RemotePersistenceClient,
@@ -211,7 +287,10 @@ actor RemoteConnectionRuntime {
         actionTimeout: Duration = .seconds(10),
         actionDeadline: @escaping ActionDeadline = { duration, operation in
             try await RemoteConnectionRuntime.withTimeout(duration, operation: operation)
-        }
+        },
+        screenshotCache: RemoteScreenshotCacheClient = .noop,
+        backgroundTasks: RemoteBackgroundTaskClient = .noop,
+        backgroundTransferGracePeriod: Duration = .seconds(30)
     ) {
         self.persistence = persistence
         self.keychain = keychain
@@ -223,6 +302,9 @@ actor RemoteConnectionRuntime {
         self.pairingDurableCommitCompleted = pairingDurableCommitCompleted
         self.actionTimeout = actionTimeout
         self.actionDeadline = actionDeadline
+        self.screenshotCache = screenshotCache
+        self.backgroundTasks = backgroundTasks
+        self.backgroundTransferGracePeriod = backgroundTransferGracePeriod
     }
 
     nonisolated func makeDiscoveryStream() -> AsyncStream<DiscoveryEvent> {
@@ -494,6 +576,7 @@ actor RemoteConnectionRuntime {
         generation &+= 1
         connectionTask?.cancel()
         connectionTask = nil
+        aphroditeTransfers.removeAll()
         let previousSession = session
         session = pending.session
         sessionToken = pending.sessionToken
@@ -505,7 +588,7 @@ actor RemoteConnectionRuntime {
         eventHub.yield(.catalog(pending.macID, pending.catalog.revision, pending.catalog.controls))
         try? await persistence.saveCatalog(pending.macID, pending.catalog.revision, pending.catalog.controls)
         pending.session.startReceiving()
-        try? await pending.session.requestSoundMixerIfSupported()
+        try? await pending.session.requestAphroditeLibraryIfSupported()
         if let previousSession {
             try? await previousSession.setSystemMonitorStreaming(false)
             await closeSession(previousSession)
@@ -641,6 +724,7 @@ actor RemoteConnectionRuntime {
 
     private func performForget(_ id: UUID) async throws {
         try await persistence.markMacTombstoned(id)
+        await screenshotCache.removeMac(id)
 
         generation &+= 1
         connectionTask?.cancel()
@@ -649,6 +733,7 @@ actor RemoteConnectionRuntime {
         pairingTask = nil
         pairingToken = nil
         pendingRevocation = nil
+        aphroditeTransfers.removeAll()
 
         let detachedSession = selected?.id == id ? session : nil
         if selected?.id == id { selected = nil }
@@ -683,6 +768,46 @@ actor RemoteConnectionRuntime {
         return result
     }
 
+    func fetchCodexUsage(_ invocation: RemoteCodexUsageInvocation) async throws -> RemoteCodexUsageResult {
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        guard session.protocolVersion.supportsCodexUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let result = try await Self.withTimeout(.seconds(45)) {
+            try await session.fetchCodexUsage(invocation.request)
+        }
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              self.session === session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        return result
+    }
+
+    func fetchClaudeUsage(_ invocation: RemoteClaudeUsageInvocation) async throws -> RemoteClaudeUsageResult {
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        guard session.protocolVersion.supportsClaudeUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let result = try await Self.withTimeout(.seconds(45)) {
+            try await session.fetchClaudeUsage(invocation.request)
+        }
+        guard selected?.id == invocation.macID,
+              sessionToken == invocation.sessionID,
+              self.session === session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        return result
+    }
+
     func sendSoundMixer(_ command: RemoteSoundMixerCommand) async throws {
         guard let session else { throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline") }
         try await session.sendSoundMixer(command)
@@ -695,6 +820,65 @@ actor RemoteConnectionRuntime {
         try await session.setSystemMonitorStreaming(enabled)
     }
 
+    func setSoundMixerStreaming(_ enabled: Bool) async throws {
+        guard let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline")
+        }
+        try await session.setSoundMixerStreaming(enabled)
+    }
+
+    func setBrightnessStreaming(_ enabled: Bool) async throws {
+        guard let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline")
+        }
+        try await session.setBrightnessStreaming(enabled)
+    }
+
+    func sendBrightness(_ command: RemoteBrightnessCommand) async throws {
+        guard let session else { throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline") }
+        try await session.sendBrightness(command)
+    }
+
+    func setScreenshotsStreaming(_ enabled: Bool) async throws {
+        guard let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "Mac is offline")
+        }
+        try await session.setScreenshotsStreaming(enabled)
+    }
+
+    func fetchScreenshotThumbnails(
+        _ invocation: RemoteScreenshotInvocation<RemoteScreenshotThumbnailsRequest>
+    ) async throws -> RemoteScreenshotThumbnailsResult {
+        try await screenshotRequest(invocation) { try await $0.fetchScreenshotThumbnails(invocation.request) }
+    }
+
+    func fetchScreenshotImage(
+        _ invocation: RemoteScreenshotInvocation<RemoteScreenshotImageRequest>
+    ) async throws -> RemoteScreenshotImagePayload {
+        try await screenshotRequest(invocation) { try await $0.fetchScreenshotImage(invocation.request) }
+    }
+
+    func deleteScreenshots(
+        _ invocation: RemoteScreenshotInvocation<RemoteScreenshotDeleteRequest>
+    ) async throws -> RemoteScreenshotDeleteResult {
+        try await screenshotRequest(invocation) { try await $0.deleteScreenshots(invocation.request) }
+    }
+
+    /// Timeouts live in the session's `RemoteScreenshotResponses` (per reply, or per chunk for images).
+    private func screenshotRequest<Request: Equatable & Sendable, Value: Sendable>(
+        _ invocation: RemoteScreenshotInvocation<Request>,
+        _ operation: @Sendable (RemoteClientSession) async throws -> Value
+    ) async throws -> Value {
+        guard selected?.id == invocation.macID, let session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        let result = try await operation(session)
+        guard selected?.id == invocation.macID, self.session === session else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+        return result
+    }
+
     func setForegrounded(_ value: Bool) async {
         foregroundLifecycleGeneration &+= 1
         let lifecycleGeneration = foregroundLifecycleGeneration
@@ -704,46 +888,104 @@ actor RemoteConnectionRuntime {
                 generation &+= 1
                 connectionTask?.cancel()
                 connectionTask = nil
-                let detachedSession = session
-                session = nil
-                sessionToken = nil
-                browser?.cancel()
-                browser = nil
-                browserRetryTask?.cancel()
-                browserRetryTask = nil
-                browserGeneration &+= 1
-                discovered.removeAll()
-                if let detachedSession {
-                    try? await detachedSession.setSystemMonitorStreaming(false)
-                    await closeSession(detachedSession)
-                }
-                await backgroundCleanup()
+                stopBrowsingForBackground()
+                await closeSessionForBackground()
                 return
             }
             await abortPairing(nil)
             generation &+= 1
             connectionTask?.cancel()
             connectionTask = nil
-            let detachedSession = session
-            session = nil
-            sessionToken = nil
-            browser?.cancel()
-            browser = nil
-            browserRetryTask?.cancel()
-            browserRetryTask = nil
-            browserGeneration &+= 1
-            discovered.removeAll()
-            if let detachedSession {
-                try? await detachedSession.setSystemMonitorStreaming(false)
-                await closeSession(detachedSession)
+            stopBrowsingForBackground()
+            if backgroundHold != nil { return }
+            if activeBackgroundTransfers > 0, session != nil {
+                // Keep the session for the transfers; nothing reconnects while backgrounded.
+                await beginBackgroundHold()
+                return
             }
-            await backgroundCleanup()
+            await closeSessionForBackground()
             guard foregroundLifecycleGeneration == lifecycleGeneration else { return }
             return
         }
+        // The held session is still open, so the reconnect below is skipped for it.
+        await cancelBackgroundHold()
         startDiscovery()
         guard foregroundLifecycleGeneration == lifecycleGeneration, foregrounded else { return }
         if let selected, session == nil { await select(selected) }
+    }
+
+    func withBackgroundTransferHold(_ transfer: @escaping @Sendable () async throws -> URL) async throws -> URL {
+        activeBackgroundTransfers += 1
+        do {
+            let url = try await transfer()
+            await backgroundTransferEnded()
+            return url
+        } catch {
+            await backgroundTransferEnded()
+            throw error
+        }
+    }
+
+    private func backgroundTransferEnded() async {
+        activeBackgroundTransfers -= 1
+        guard activeBackgroundTransfers == 0, let id = backgroundHold?.id else { return }
+        await endBackgroundHold(id)
+    }
+
+    private func beginBackgroundHold() async {
+        let id = UUID()
+        let gracePeriod = backgroundTransferGracePeriod
+        let timeout = Task { [weak self] in
+            do { try await Task.sleep(for: gracePeriod) } catch { return }
+            await self?.endBackgroundHold(id)
+        }
+        backgroundHold = BackgroundHold(id: id, timeout: timeout)
+        let task = await backgroundTasks.begin("OnlyRemote screenshot transfer") { [weak self] in
+            Task { await self?.endBackgroundHold(id) }
+        }
+        // The hold may have ended or been cancelled while the system granted the time.
+        if backgroundHold?.id == id {
+            backgroundHold?.task = task
+        } else if let task {
+            await backgroundTasks.end(task)
+        }
+    }
+
+    /// Ends a hold: closes the session as backgrounding normally does, then gives the time back.
+    private func endBackgroundHold(_ id: UUID) async {
+        guard let hold = backgroundHold, hold.id == id else { return }
+        backgroundHold = nil
+        hold.timeout.cancel()
+        if foregrounded == false { await closeSessionForBackground() }
+        if let task = hold.task { await backgroundTasks.end(task) }
+    }
+
+    /// Foregrounding keeps the held session as the live one.
+    private func cancelBackgroundHold() async {
+        guard let hold = backgroundHold else { return }
+        backgroundHold = nil
+        hold.timeout.cancel()
+        if let task = hold.task { await backgroundTasks.end(task) }
+    }
+
+    private func stopBrowsingForBackground() {
+        browser?.cancel()
+        browser = nil
+        browserRetryTask?.cancel()
+        browserRetryTask = nil
+        browserGeneration &+= 1
+        discovered.removeAll()
+    }
+
+    private func closeSessionForBackground() async {
+        let detachedSession = session
+        session = nil
+        sessionToken = nil
+        if let detachedSession {
+            try? await detachedSession.setSystemMonitorStreaming(false)
+            await closeSession(detachedSession)
+        }
+        await backgroundCleanup()
     }
 
     private func connectWithRetry(_ mac: PairedMac, generation expectedGeneration: UInt64) async {
@@ -837,7 +1079,7 @@ actor RemoteConnectionRuntime {
                 eventHub.yield(.sessionStarted(mac.id, newSessionToken))
                 eventHub.yield(.authenticated(mac.id))
                 connected.startReceiving()
-                try? await connected.requestSoundMixerIfSupported()
+                try? await connected.requestAphroditeLibraryIfSupported()
                 do {
                     try await catalogRequest(connected)
                 } catch {
@@ -949,7 +1191,7 @@ actor RemoteConnectionRuntime {
                 eventHub.yield(.catalog(mac.id, catalog.revision, catalog.controls))
                 try? await persistence.saveCatalog(mac.id, catalog.revision, catalog.controls)
                 recovered.startReceiving()
-                try? await recovered.requestSoundMixerIfSupported()
+                try? await recovered.requestAphroditeLibraryIfSupported()
                 finalizingTransactionID = nil
                 return true
             } catch {
@@ -1044,8 +1286,39 @@ actor RemoteConnectionRuntime {
             eventHub.yield(.action(macID, result))
         case let .soundMixerSnapshot(snapshot):
             eventHub.yield(.soundMixer(macID, snapshot))
+        case let .brightnessSnapshot(snapshot):
+            eventHub.yield(.brightness(macID, snapshot))
+        case let .screenshotsLibrary(library):
+            eventHub.yield(.screenshots(macID, library))
+        case .screenshotThumbnailsResult, .screenshotImageManifest, .screenshotImageChunk,
+             .screenshotDeleteResult, .screenshotRequestFailed:
+            // Correlated replies are consumed by the session's RemoteScreenshotResponses.
+            break
+        case .screenshotsSubscriptionUpdate, .screenshotThumbnailsRequest, .screenshotImageRequest,
+             .screenshotDeleteRequest:
+            // iOS → Mac only.
+            break
         case let .systemMonitorSnapshot(snapshot):
             eventHub.yield(.systemMonitor(macID, snapshot))
+        case let .aphroditeLibraryManifest(manifest):
+            let currentRevision = (try? await persistence.loadAphroditeLibrary(macID))?.revision
+            guard currentRevision.map({ $0 < manifest.revision }) ?? true else { return }
+            aphroditeTransfers = [manifest.transferID: .init(manifest: manifest)]
+        case let .aphroditeDocumentChunk(chunk):
+            guard var transfer = aphroditeTransfers[chunk.transferID] else { return }
+            do {
+                try transfer.append(chunk)
+                aphroditeTransfers[chunk.transferID] = transfer
+            } catch {
+                aphroditeTransfers[chunk.transferID] = nil
+            }
+        case let .aphroditeTransferComplete(transferID):
+            guard let transfer = aphroditeTransfers.removeValue(forKey: transferID),
+                  let snapshot = try? transfer.complete() else { return }
+            do {
+                try await persistence.replaceAphroditeLibrary(macID, snapshot)
+                eventHub.yield(.aphroditeLibraryChanged(macID, snapshot.revision))
+            } catch { return }
         case let .catalogChanged(revision):
             eventHub.yield(.catalogInvalidated(macID, revision))
             guard let activeSession = session else { return }
@@ -1091,6 +1364,7 @@ actor RemoteConnectionRuntime {
             eventMacID: macID,
             eventToken: token
         ) else { return }
+        aphroditeTransfers.removeAll()
         eventHub.yield(.offline(macID, Self.safeMessage(error)))
         if let selected { await select(selected) }
     }
@@ -1485,6 +1759,9 @@ actor RemoteClientSession {
     private let event: @Sendable (RemoteMessage) async -> Void
     private let disconnected: @Sendable (Swift.Error) async -> Void
     private let actionResponses = RemoteActionResponses()
+    private let codexUsageResponses = RemoteCodexUsageResponses()
+    private let claudeUsageResponses = RemoteClaudeUsageResponses()
+    private let screenshotResponses = RemoteScreenshotResponses()
     private var receiveTask: Task<Void, Never>?
     private var closed = false
 
@@ -1623,16 +1900,94 @@ actor RemoteClientSession {
     }
 
     func requestCatalog() async throws { try await sendMessage(.catalogRequest) }
-    func requestSoundMixerIfSupported() async throws {
-        guard protocolVersion.supportsSoundMixerRemote else { return }
-        try await sendMessage(.soundMixerSnapshotRequest)
+    func requestAphroditeLibraryIfSupported() async throws {
+        guard protocolVersion.supportsAphroditeRemote else { return }
+        try await sendMessage(.aphroditeLibraryRequest)
     }
     func sendSoundMixer(_ command: RemoteSoundMixerCommand) async throws {
         guard protocolVersion.supportsSoundMixerRemote else {
             throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer remote control is unavailable on this Mac")
         }
+        if command.requiresSoundMixerTab, protocolVersion.supportsSoundMixerTabRemote == false {
+            throw Self.soundMixerUpgradeRequired
+        }
         try await sendMessage(.soundMixerCommand(command))
     }
+    func setSoundMixerStreaming(_ enabled: Bool) async throws {
+        guard protocolVersion.supportsSoundMixerTabRemote else { throw Self.soundMixerUpgradeRequired }
+        try await sendMessage(.soundMixerSubscriptionUpdate(enabled))
+    }
+    private static let soundMixerUpgradeRequired = RemoteProtocolError(
+        code: .upgradeRequired,
+        message: "Sound Mixer requires a newer OnlySwitch"
+    )
+    func setBrightnessStreaming(_ enabled: Bool) async throws {
+        guard protocolVersion.supportsBrightnessRemote else { throw Self.brightnessUpgradeRequired }
+        try await sendMessage(.brightnessSubscriptionUpdate(enabled))
+    }
+    func sendBrightness(_ command: RemoteBrightnessCommand) async throws {
+        guard protocolVersion.supportsBrightnessRemote else { throw Self.brightnessUpgradeRequired }
+        try await sendMessage(.brightnessCommand(command))
+    }
+    private static let brightnessUpgradeRequired = RemoteProtocolError(
+        code: .upgradeRequired,
+        message: "Brightness requires a newer OnlySwitch"
+    )
+    func setScreenshotsStreaming(_ enabled: Bool) async throws {
+        guard protocolVersion.supportsScreenshotsRemote else { throw Self.screenshotsUpgradeRequired }
+        guard enabled == false else {
+            try await sendMessage(.screenshotsSubscriptionUpdate(true))
+            return
+        }
+        // The Mac drops pending thumbnail/image work on unsubscribe without replying,
+        // so fail every awaiter here whether or not the update could be sent.
+        do {
+            try await sendMessage(.screenshotsSubscriptionUpdate(false))
+        } catch {
+            await screenshotResponses.finishAll()
+            throw error
+        }
+        await screenshotResponses.finishAll()
+    }
+    func fetchScreenshotThumbnails(_ request: RemoteScreenshotThumbnailsRequest) async throws -> RemoteScreenshotThumbnailsResult {
+        let response = try await screenshotRequest(request.requestID, kind: .thumbnails, .screenshotThumbnailsRequest(request))
+        guard case let .thumbnails(result) = response else { throw Self.unexpectedScreenshotReply }
+        return result
+    }
+    func fetchScreenshotImage(_ request: RemoteScreenshotImageRequest) async throws -> RemoteScreenshotImagePayload {
+        let response = try await screenshotRequest(
+            request.requestID,
+            kind: .image(itemID: request.itemID, revision: request.revision),
+            .screenshotImageRequest(request)
+        )
+        guard case let .image(payload) = response else { throw Self.unexpectedScreenshotReply }
+        return payload
+    }
+    func deleteScreenshots(_ request: RemoteScreenshotDeleteRequest) async throws -> RemoteScreenshotDeleteResult {
+        let response = try await screenshotRequest(request.requestID, kind: .delete, .screenshotDeleteRequest(request))
+        guard case let .deleted(result) = response else { throw Self.unexpectedScreenshotReply }
+        return result
+    }
+    private func screenshotRequest(
+        _ id: UUID,
+        kind: RemoteScreenshotResponses.Kind,
+        _ message: RemoteMessage
+    ) async throws -> RemoteScreenshotResponse {
+        guard protocolVersion.supportsScreenshotsRemote else { throw Self.screenshotsUpgradeRequired }
+        let registration = await screenshotResponses.register(id, kind: kind)
+        do {
+            try await sendMessage(message)
+            return try await registration.response()
+        } catch {
+            await screenshotResponses.cancel(id, token: registration.token)
+            throw error
+        }
+    }
+    private static let screenshotsUpgradeRequired = RemoteProtocolError(
+        code: .upgradeRequired,
+        message: "Screenshots require a newer OnlySwitch"
+    )
+    private static let unexpectedScreenshotReply = RemoteProtocolError(code: .invalidFrame, message: "Unexpected screenshot reply")
     func setSystemMonitorStreaming(_ enabled: Bool) async throws {
         guard protocolVersion.supportsSystemMonitorRemote else {
             throw RemoteProtocolError(
@@ -1684,6 +2039,36 @@ actor RemoteClientSession {
         }
     }
 
+    func fetchCodexUsage(_ request: RemoteCodexUsageRequest) async throws -> RemoteCodexUsageResult {
+        guard protocolVersion.supportsCodexUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let registration = await codexUsageResponses.register(request.requestID)
+        do {
+            try await sendMessage(.codexUsageRequest(request))
+            for try await result in registration.stream { return result }
+            throw CancellationError()
+        } catch {
+            await codexUsageResponses.cancel(request.requestID, token: registration.token)
+            throw error
+        }
+    }
+
+    func fetchClaudeUsage(_ request: RemoteClaudeUsageRequest) async throws -> RemoteClaudeUsageResult {
+        guard protocolVersion.supportsClaudeUsageRemote else {
+            throw RemoteProtocolError(code: .upgradeRequired, message: "Update OnlySwitch on the selected Mac")
+        }
+        let registration = await claudeUsageResponses.register(request.requestID)
+        do {
+            try await sendMessage(.claudeUsageRequest(request))
+            for try await result in registration.stream { return result }
+            throw CancellationError()
+        } catch {
+            await claudeUsageResponses.cancel(request.requestID, token: registration.token)
+            throw error
+        }
+    }
+
     func close() async {
         guard closed == false else { return }
         closed = true
@@ -1691,6 +2076,9 @@ actor RemoteClientSession {
         receiveTask = nil
         await io.cancel()
         await actionResponses.finishAll()
+        await codexUsageResponses.finishAll()
+        await claudeUsageResponses.finishAll()
+        await screenshotResponses.finishAll()
     }
 
     private func startReceiveLoopIfNeeded() {
@@ -1703,11 +2091,17 @@ actor RemoteClientSession {
             while Task.isCancelled == false {
                 let message = try await receiveMessage()
                 if case let .actionResult(result) = message { await actionResponses.resolve(result) }
+                if case let .codexUsageResult(result) = message { await codexUsageResponses.resolve(result) }
+                if case let .claudeUsageResult(result) = message { await claudeUsageResponses.resolve(result) }
+                if await screenshotResponses.consume(message) { continue }
                 await event(message)
             }
         } catch is CancellationError {
         } catch {
             await actionResponses.finishAll()
+            await codexUsageResponses.finishAll()
+            await claudeUsageResponses.finishAll()
+            await screenshotResponses.finishAll()
             await disconnected(error)
         }
     }
@@ -1798,6 +2192,76 @@ private actor RemoteActionResponses {
         for continuation in values { continuation.finish(throwing: CancellationError()) }
     }
 }
+
+private actor RemoteCodexUsageResponses {
+    typealias Stream = AsyncThrowingStream<RemoteCodexUsageResult, Swift.Error>
+    struct Registration: Sendable {
+        let token: UUID
+        let stream: Stream
+    }
+    private struct Pending: Sendable {
+        let token: UUID
+        let continuation: Stream.Continuation
+    }
+    private var continuations: [UUID: Pending] = [:]
+    func register(_ id: UUID) -> Registration {
+        let (stream, continuation) = Stream.makeStream(of: RemoteCodexUsageResult.self, bufferingPolicy: .bufferingNewest(1))
+        let token = UUID()
+        continuations[id]?.continuation.finish(throwing: CancellationError())
+        continuations[id] = Pending(token: token, continuation: continuation)
+        continuation.onTermination = { [weak self] _ in Task { await self?.cancel(id, token: token) } }
+        return Registration(token: token, stream: stream)
+    }
+    func resolve(_ result: RemoteCodexUsageResult) {
+        guard let pending = continuations.removeValue(forKey: result.requestID) else { return }
+        pending.continuation.yield(result)
+        pending.continuation.finish()
+    }
+    func cancel(_ id: UUID, token: UUID) {
+        guard continuations[id]?.token == token else { return }
+        continuations.removeValue(forKey: id)?.continuation.finish(throwing: CancellationError())
+    }
+    func finishAll() {
+        let values = continuations.values
+        continuations.removeAll()
+        for pending in values { pending.continuation.finish(throwing: CancellationError()) }
+    }
+}
+private actor RemoteClaudeUsageResponses {
+    typealias Stream = AsyncThrowingStream<RemoteClaudeUsageResult, Swift.Error>
+    struct Registration: Sendable {
+        let token: UUID
+        let stream: Stream
+    }
+    private struct Pending: Sendable {
+        let token: UUID
+        let continuation: Stream.Continuation
+    }
+    private var continuations: [UUID: Pending] = [:]
+    func register(_ id: UUID) -> Registration {
+        let (stream, continuation) = Stream.makeStream(of: RemoteClaudeUsageResult.self, bufferingPolicy: .bufferingNewest(1))
+        let token = UUID()
+        continuations[id]?.continuation.finish(throwing: CancellationError())
+        continuations[id] = Pending(token: token, continuation: continuation)
+        continuation.onTermination = { [weak self] _ in Task { await self?.cancel(id, token: token) } }
+        return Registration(token: token, stream: stream)
+    }
+    func resolve(_ result: RemoteClaudeUsageResult) {
+        guard let pending = continuations.removeValue(forKey: result.requestID) else { return }
+        pending.continuation.yield(result)
+        pending.continuation.finish()
+    }
+    func cancel(_ id: UUID, token: UUID) {
+        guard continuations[id]?.token == token else { return }
+        continuations.removeValue(forKey: id)?.continuation.finish(throwing: CancellationError())
+    }
+    func finishAll() {
+        let values = continuations.values
+        continuations.removeAll()
+        for pending in values { pending.continuation.finish(throwing: CancellationError()) }
+    }
+}
+
 
 private enum RemoteDeviceIdentity {
     static let key = "remoteDeviceID"

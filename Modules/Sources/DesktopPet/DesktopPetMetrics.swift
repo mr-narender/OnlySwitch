@@ -3,7 +3,6 @@ import CoreGraphics
 enum DesktopPetMetrics {
     static let canvasSize = CGSize(width: 152, height: 160)
     static let artworkSize = CGSize(width: 120, height: 130)
-    static let visibleScreenInset: CGFloat = 24
     static let pomodoroCanvasSize = CGSize(
         width: canvasSize.width,
         height: canvasSize.height + 28
@@ -15,8 +14,25 @@ enum DesktopPetMetrics {
         height: 28
     )
 
-    static func canvasSize(for state: DesktopPetPomodoroState?) -> CGSize {
-        state == nil ? canvasSize : pomodoroCanvasSize
+    static func canvasSize(
+        for state: DesktopPetPomodoroState?,
+        showsPlayback: Bool = false
+    ) -> CGSize {
+        let petSize = state == nil ? canvasSize : pomodoroCanvasSize
+        return CGSize(
+            width: petSize.width,
+            height: petSize.height
+                + (showsPlayback ? nowPlayingLaneHeight + playbackLaneHeight(for: state) : 0)
+        )
+    }
+
+    /// Reserved even without now-playing text, so the panel does not resize between tracks.
+    static let nowPlayingLaneHeight: CGFloat = 36
+    static let nowPlayingSize = CGSize(width: 140, height: 32)
+    static let nowPlayingHorizontalPadding: CGFloat = 10
+
+    static func playbackLaneHeight(for state: DesktopPetPomodoroState?) -> CGFloat {
+        state == nil ? 16 : 32
     }
 
     static func artworkVerticalOffset(for state: DesktopPetPomodoroState?) -> CGFloat {
@@ -39,13 +55,6 @@ enum DesktopPetMetrics {
             y: (canvasSize.height - artworkSize.height) / 2,
             width: artworkSize.width,
             height: artworkSize.height
-        )
-    }
-
-    static var defaultPanelInsets: CGSize {
-        CGSize(
-            width: visibleScreenInset - (canvasSize.width - artworkSize.width) / 2,
-            height: visibleScreenInset - (canvasSize.height - artworkSize.height) / 2
         )
     }
 }

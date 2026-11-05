@@ -17,7 +17,9 @@ final class SwitchManager: @unchecked Sendable {
     private var shownSwitchMap = [SwitchType: SwitchProvider?]()
     
     @MainActor var barVMList: [SwitchBarVM] {
-        let sortedSwitchMap = shownSwitchMap.sorted() {$0.key.rawValue < $1.key.rawValue}
+        let sortedSwitchMap = shownSwitchMap.sorted() {
+            $0.key.legacyIdentifier < $1.key.legacyIdentifier
+        }
         var switchBarVMs = [SwitchBarVM]()
         for (_, value) in sortedSwitchMap {
             if let aswitch = value {
@@ -28,7 +30,7 @@ final class SwitchManager: @unchecked Sendable {
         return switchBarVMs
     }
     
-    var shownSwitchCount:Int {
+    var shownSwitchCount: Int {
         shownSwitchMap.count
     }
     
@@ -69,31 +71,104 @@ final class SwitchManager: @unchecked Sendable {
 
     @MainActor
     func registerSwitchesShouldShow() {
-        let state = getAllSwitchState()
-        for index in 0..<switchTypeCount {
-            let bitwise:UInt64 = 1 << index
-            let shouldShow = (state & bitwise == 0) ? false : true
-            if shouldShow {
-                let type = SwitchType(rawValue: bitwise)!
-                if type == .radioStation {
-                    self.register(aswitch: RadioStationSwitch.shared)
-                } else {
-                    self.register(aswitch: type.getNewSwitchInstance())
-                }
-                
-            }
+        let visibleTypes = visibleSwitchTypes()
+        for type in SwitchType.allCases
+        where visibleTypes.contains(type) {
+            register(type: type)
         }
     }
-    
-    func getAllSwitchState() -> UInt64 {
-        if let stateStr = UserDefaults.standard.string(forKey: UserDefaults.Key.SwitchState) {
-            let state = UInt64(stateStr) ?? 16383 // binary 11111111111111
-            return state
+
+    func visibleSwitchTypes() -> Set<SwitchType> {
+        visibleTypesIncludingNewDiscoveries().subtracting(SwitchType.deprecatedTabVisibilitySwitches)
+    }
+
+    func isVisible(_ type: SwitchType) -> Bool {
+        visibleSwitchTypes().contains(type)
+    }
+
+    @MainActor
+    func setVisible(_ isVisible: Bool, for type: SwitchType) {
+        if isVisible {
+            register(type: type)
         } else {
-            UserDefaults.standard.set("16383", forKey: UserDefaults.Key.SwitchState)
-            UserDefaults.standard.synchronize()
-            return 16383
+            if type == .radioStation {
+                RadioStationSwitch.shared.playerItem.isPlaying = false
+            }
+            unregister(for: type)
         }
+        SwitchVisibilityState.setVisible(type, for: isVisible, in: .standard)
+    }
+
+    @MainActor
+    private func register(type: SwitchType) {
+        if type == .radioStation {
+            register(aswitch: RadioStationSwitch.shared)
+        } else {
+            register(aswitch: type.getNewSwitchInstance())
+        }
+    }
+
+    private func visibleTypesIncludingNewDiscoveries() -> Set<SwitchType> {
+        guard var visibleTypes = SwitchVisibilityState.load(from: .standard).visibleTypes else {
+            // Do not replace a present value that this version cannot decode.
+            return []
+        }
+        var discoveredTypes = Set<SwitchType>()
+
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallClaudeUsageSwitch) {
+            discoveredTypes.insert(.claudeUsage)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallCodexUsageSwitch) {
+            discoveredTypes.insert(.codexUsage)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallReverseScrollDirectionSwitch) {
+            discoveredTypes.insert(.reverseScrollDirection)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallSystemMonitorSwitch) {
+            discoveredTypes.insert(.systemMonitor)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallXcodeCleanerSwitch) {
+            discoveredTypes.insert(.xcodeCleaner)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallAppUninstallerSwitch) {
+            discoveredTypes.insert(.appUninstaller)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallTailscaleSwitch) {
+            discoveredTypes.insert(.tailscale)
+        }
+        if !UserDefaults.standard.bool(forKey: UserDefaults.Key.didInstallAphroditeSwitch) {
+            discoveredTypes.insert(.aphrodite)
+        }
+
+        guard discoveredTypes.isEmpty == false else { return visibleTypes }
+
+        visibleTypes.formUnion(discoveredTypes)
+        SwitchVisibilityState.setVisibleTypes(visibleTypes, in: .standard)
+        if discoveredTypes.contains(.claudeUsage) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallClaudeUsageSwitch)
+        }
+        if discoveredTypes.contains(.codexUsage) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallCodexUsageSwitch)
+        }
+        if discoveredTypes.contains(.reverseScrollDirection) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallReverseScrollDirectionSwitch)
+        }
+        if discoveredTypes.contains(.systemMonitor) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallSystemMonitorSwitch)
+        }
+        if discoveredTypes.contains(.xcodeCleaner) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallXcodeCleanerSwitch)
+        }
+        if discoveredTypes.contains(.appUninstaller) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallAppUninstallerSwitch)
+        }
+        if discoveredTypes.contains(.tailscale) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallTailscaleSwitch)
+        }
+        if discoveredTypes.contains(.aphrodite) {
+            UserDefaults.standard.set(true, forKey: UserDefaults.Key.didInstallAphroditeSwitch)
+        }
+        return visibleTypes
     }
 
     func activeEvolutionList() -> [EvolutionBarVM] {

@@ -56,6 +56,19 @@ final class CodexLive: Sendable {
         try await codexRuntimePool.chatStream(model: model, prompt: prompt)
     }
 
+    func generateApp(_ request: ModelGenerationRequest) async throws -> String {
+        let stream = try await codexRuntimePool.chatStream(
+            model: request.model, prompt: request.prompt, purpose: request.purpose,
+            instructions: request.systemInstructions, conversationID: request.conversationID
+        )
+        var result = ""
+        for try await event in stream {
+            if case let .contentDelta(delta) = event { result += delta }
+            if case let .completed(final) = event, !final.isEmpty { result = final }
+        }
+        return result
+    }
+
     @Sendable
     func test() async -> Bool {
         await currentSession() != nil
@@ -79,6 +92,7 @@ private actor CodexRuntimePool {
         let runtime: AgentRuntime
         var restored: Bool
         var threadID: String?
+        var conversationThreadIDs: [UUID: String]
     }
 
     private var runtimes: [String: RuntimeEntry] = [:]
@@ -99,6 +113,7 @@ private actor CodexRuntimePool {
             guard let entry = runtimes[model] else { continue }
             try await entry.runtime.signOut()
             runtimes[model]?.threadID = nil
+            runtimes[model]?.conversationThreadIDs.removeAll()
         }
         if modelKeys.isEmpty {
             let runtime = try ensureRuntime(for: defaultModel)
@@ -117,27 +132,31 @@ private actor CodexRuntimePool {
         }
     }
 
-    func chatStream(model: String, prompt: String) async throws -> AsyncThrowingStream<ModelStreamEvent, Error> {
-        let runtime = try ensureRuntime(for: model)
-        try await ensureRestored(for: model)
+    func chatStream(model: String, prompt: String, purpose: ModelGenerationPurpose = .chat, instructions: String = AppleScriptSystemPrompt.withCurrentMacOSVersion, conversationID: UUID? = nil) async throws -> AsyncThrowingStream<ModelStreamEvent, Error> {
+        let key = purpose == .chat ? model : "\(purpose.rawValue)::\(model)"
+        let runtime = try ensureRuntime(for: key, model: model, instructions: instructions)
+        try await ensureRestored(for: key)
         guard let session = await runtime.currentSession(), !session.accessToken.isEmpty else {
             throw CodexError.uninitialized
         }
 
         let threadID: String
-        if let existingThreadID = runtimes[model]?.threadID {
+        if let conversationID, let existingThreadID = runtimes[key]?.conversationThreadIDs[conversationID] {
+            threadID = existingThreadID
+        } else if conversationID == nil, let existingThreadID = runtimes[key]?.threadID {
             threadID = existingThreadID
         } else {
-            let thread = try await runtime.createThread(title: "OnlyAgent")
+            let thread = try await runtime.createThread(title: purpose == .aphrodite ? "Aphrodite" : "OnlyAgent")
             threadID = thread.id
-            runtimes[model]?.threadID = threadID
+            if let conversationID { runtimes[key]?.conversationThreadIDs[conversationID] = threadID }
+            else { runtimes[key]?.threadID = threadID }
         }
 
         let userPrompt = UserMessageRequest(text: prompt)
         let eventStream = try await runtime.streamMessage(userPrompt, in: threadID)
         
         return AsyncThrowingStream { continuation in
-            Task {
+            let worker = Task {
                 var finalText = ""
                 
                 do {
@@ -160,11 +179,12 @@ private actor CodexRuntimePool {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in worker.cancel() }
         }
     }
 
-    private func ensureRuntime(for model: String) throws -> AgentRuntime {
-        if let entry = runtimes[model] {
+    private func ensureRuntime(for key: String, model: String? = nil, instructions: String = AppleScriptSystemPrompt.withCurrentMacOSVersion) throws -> AgentRuntime {
+        if let entry = runtimes[key] {
             return entry.runtime
         }
 
@@ -175,14 +195,14 @@ private actor CodexRuntimePool {
         )
         let backend = CodexResponsesBackend(
             configuration: .init(
-                model: model,
+                model: model ?? key,
                 reasoningEffort: .medium,
-                instructions: AppleScriptSystemPrompt.withCurrentMacOSVersion,
+                instructions: instructions,
                 enableWebSearch: false
             )
         )
         let stateStore = try GRDBRuntimeStateStore(
-            url: runtimeStateURL(for: model)
+            url: runtimeStateURL(for: key)
         )
         let runtime = try AgentRuntime(configuration: .init(
             authProvider: authProvider,
@@ -191,16 +211,15 @@ private actor CodexRuntimePool {
             approvalPresenter: AutoApprovePresenter(),
             stateStore: stateStore
         ))
-        runtimes[model] = .init(runtime: runtime, restored: false, threadID: nil)
+        runtimes[key] = .init(runtime: runtime, restored: false, threadID: nil, conversationThreadIDs: [:])
         return runtime
     }
 
     private func ensureRestored(for model: String) async throws {
-        guard var entry = runtimes[model] else { return }
+        guard let entry = runtimes[model] else { return }
         guard !entry.restored else { return }
         _ = try await entry.runtime.restore()
-        entry.restored = true
-        runtimes[model] = entry
+        runtimes[model]?.restored = true
     }
 
     private func runtimeStateURL(for model: String) -> URL {

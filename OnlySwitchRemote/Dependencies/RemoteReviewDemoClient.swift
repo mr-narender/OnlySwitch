@@ -1,6 +1,7 @@
 import Foundation
 import Network
 import RemoteCore
+import UIKit
 
 actor RemoteReviewDemoRuntime {
     static let studioMacID = UUID(uuidString: "00000000-0000-0000-0000-00000000D001")!
@@ -28,6 +29,12 @@ actor RemoteReviewDemoRuntime {
     private var preparedPairingRecord: PreparedPairingPersistenceRecord?
     private var eventContinuations: [UUID: AsyncStream<RemoteConnectionEvent>.Continuation] = [:]
     private var eventBacklog: [RemoteConnectionEvent] = []
+    private var soundMixerSnapshot = RemoteReviewDemoRuntime.makeSoundMixerSnapshot()
+    private var isSoundMixerStreaming = false
+    private var brightnessSnapshot = RemoteReviewDemoRuntime.makeBrightnessSnapshot()
+    private var isBrightnessStreaming = false
+    private var screenshotLibrary = RemoteReviewDemoRuntime.makeScreenshotLibrary()
+    private var isScreenshotsStreaming = false
 
     init() {
         let connectedAt = Date(timeIntervalSince1970: 1_800_000_000)
@@ -153,6 +160,137 @@ actor RemoteReviewDemoRuntime {
         let selectedStatuses = (statuses[macID] ?? []).filter { controlIDs.contains($0.id) }
         publish(.catalog(macID, catalog.revision, catalog.controls))
         publish(.statusSnapshot(macID, selectedStatuses))
+    }
+
+    func setSoundMixerStreaming(_ enabled: Bool) {
+        isSoundMixerStreaming = enabled
+        guard enabled, let macID = authenticatedMacID else { return }
+        publish(.soundMixer(macID, soundMixerSnapshot))
+    }
+
+    func sendSoundMixer(_ command: RemoteSoundMixerCommand) {
+        let current = soundMixerSnapshot
+        var systemVolume = current.systemVolume
+        var apps = current.apps
+        func update(_ id: String, _ transform: (RemoteSoundMixerApp) -> RemoteSoundMixerApp) {
+            guard let index = apps.firstIndex(where: { $0.id == id }) else { return }
+            apps[index] = transform(apps[index])
+        }
+        switch command {
+        case let .setSystemVolume(volume):
+            systemVolume = volume
+        case let .setAppVolume(id, volume):
+            update(id) { .init(id: $0.id, name: $0.name, volume: volume, isMuted: $0.isMuted, equalizer: $0.equalizer, routing: $0.routing) }
+        case let .setAppMuted(id, isMuted):
+            update(id) { .init(id: $0.id, name: $0.name, volume: $0.volume, isMuted: isMuted, equalizer: $0.equalizer, routing: $0.routing) }
+        case let .setAppEqualizerGain(id, band, gain):
+            update(id) { app in
+                guard let equalizer = app.equalizer, equalizer.gains.indices.contains(band) else { return app }
+                var gains = equalizer.gains
+                gains[band] = gain
+                let status: RemoteSoundMixerEqualizer.Status = gains.allSatisfy { $0 == 0 } ? .flat : .active
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: .init(gains: gains, status: status), routing: app.routing)
+            }
+        case let .resetAppEqualizer(id):
+            update(id) { app in
+                guard app.equalizer != nil else { return app }
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: .init(gains: [], status: .flat), routing: app.routing)
+            }
+        case let .toggleAppOutputDevice(id, deviceID):
+            guard current.outputDevices.contains(where: { $0.id == deviceID }) else { break }
+            update(id) { app in
+                guard let routing = app.routing else { return app }
+                var selected = routing.selectedDeviceIDs
+                if let index = selected.firstIndex(of: deviceID) { selected.remove(at: index) } else { selected.append(deviceID) }
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: app.equalizer, routing: .init(selectedDeviceIDs: selected, status: selected.isEmpty ? .followingSystem : .active))
+            }
+        case let .followSystemOutput(id):
+            update(id) { app in
+                guard app.routing != nil else { return app }
+                return .init(id: app.id, name: app.name, volume: app.volume, isMuted: app.isMuted, equalizer: app.equalizer, routing: .init(selectedDeviceIDs: [], status: .followingSystem))
+            }
+        }
+        soundMixerSnapshot = .init(
+            revision: current.revision + 1,
+            isEnabled: current.isEnabled,
+            systemVolume: systemVolume,
+            output: current.output,
+            apps: apps,
+            isSystemVolumeAvailable: current.isSystemVolumeAvailable,
+            outputDevices: current.outputDevices
+        )
+        guard isSoundMixerStreaming, let macID = authenticatedMacID else { return }
+        publish(.soundMixer(macID, soundMixerSnapshot))
+    }
+
+    func setBrightnessStreaming(_ enabled: Bool) {
+        isBrightnessStreaming = enabled
+        guard enabled, let macID = authenticatedMacID else { return }
+        publish(.brightness(macID, brightnessSnapshot))
+    }
+
+    func sendBrightness(_ command: RemoteBrightnessCommand) {
+        guard case let .setLevel(displayID, level) = command else { return }
+        let displays = brightnessSnapshot.displays.map { display in
+            guard display.id == displayID, display.control != .unavailable else { return display }
+            return RemoteBrightnessDisplay(id: display.id, name: display.name, control: display.control, level: level, hasError: false)
+        }
+        brightnessSnapshot = .init(revision: brightnessSnapshot.revision + 1, displays: displays)
+        guard isBrightnessStreaming, let macID = authenticatedMacID else { return }
+        publish(.brightness(macID, brightnessSnapshot))
+    }
+
+    func setScreenshotsStreaming(_ enabled: Bool) {
+        isScreenshotsStreaming = enabled
+        guard enabled, let macID = authenticatedMacID else { return }
+        publish(.screenshots(macID, screenshotLibrary))
+    }
+
+    func screenshotThumbnails(
+        _ invocation: RemoteScreenshotInvocation<RemoteScreenshotThumbnailsRequest>
+    ) throws -> RemoteScreenshotThumbnailsResult {
+        try requireScreenshotMac(invocation.macID)
+        let request = invocation.request
+        let thumbnails = screenshotLibrary.items.filter { request.ids.contains($0.id) }.compactMap { item in
+            Self.demoScreenshotImage(for: item, width: CGFloat(RemoteScreenshotLimits.maximumThumbnailPixel))
+                .jpegData(compressionQuality: 0.6)
+                .flatMap { try? RemoteScreenshotThumbnail(itemID: item.id, revision: item.revision, jpegData: $0) }
+        }
+        return .init(
+            requestID: request.requestID,
+            thumbnails: thumbnails,
+            missingIDs: request.ids.filter { id in thumbnails.contains { $0.itemID == id } == false }
+        )
+    }
+
+    func screenshotImage(
+        _ invocation: RemoteScreenshotInvocation<RemoteScreenshotImageRequest>
+    ) throws -> RemoteScreenshotImagePayload {
+        try requireScreenshotMac(invocation.macID)
+        let request = invocation.request
+        guard let item = screenshotLibrary.items.first(where: { $0.id == request.itemID && $0.revision == request.revision }),
+              let data = Self.demoScreenshotImage(for: item, width: 1_440).pngData() else {
+            throw RemoteProtocolError(code: .controlNotFound, message: "The screenshot is no longer on the Mac")
+        }
+        return .init(contentType: item.contentType, data: data)
+    }
+
+    func deleteScreenshots(
+        _ invocation: RemoteScreenshotInvocation<RemoteScreenshotDeleteRequest>
+    ) throws -> RemoteScreenshotDeleteResult {
+        try requireScreenshotMac(invocation.macID)
+        let request = invocation.request
+        let remaining = screenshotLibrary.items.filter { request.ids.contains($0.id) == false }
+        if remaining.count != screenshotLibrary.items.count {
+            screenshotLibrary = .init(
+                revision: screenshotLibrary.revision + 1,
+                isCollectionEnabled: screenshotLibrary.isCollectionEnabled,
+                items: remaining
+            )
+            if isScreenshotsStreaming, let macID = authenticatedMacID { publish(.screenshots(macID, screenshotLibrary)) }
+        }
+        // Ids that are already gone count as deleted, as on the Mac.
+        return .init(requestID: request.requestID, failedIDs: [])
     }
 
     func send(_ invocation: RemoteActionInvocation) throws -> RemoteActionResult {
@@ -322,6 +460,12 @@ actor RemoteReviewDemoRuntime {
         ]
     }
 
+    private func requireScreenshotMac(_ macID: UUID) throws {
+        guard macID == authenticatedMacID else {
+            throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+        }
+    }
+
     private func publish(_ event: RemoteConnectionEvent) {
         guard eventContinuations.isEmpty == false else {
             eventBacklog.append(event)
@@ -366,6 +510,136 @@ actor RemoteReviewDemoRuntime {
         preparedPairings = [:]
         preparedPairingRecord = nil
         eventBacklog = []
+        soundMixerSnapshot = Self.makeSoundMixerSnapshot()
+        isSoundMixerStreaming = false
+        brightnessSnapshot = Self.makeBrightnessSnapshot()
+        isBrightnessStreaming = false
+        screenshotLibrary = Self.makeScreenshotLibrary()
+        isScreenshotsStreaming = false
+    }
+
+    private nonisolated static func makeBrightnessSnapshot() -> RemoteBrightnessSnapshot {
+        .init(revision: 1, displays: [
+            .init(id: 1, name: "Built-in Retina Display", control: .native, level: 0.7, hasError: false),
+            .init(id: 2, name: "Studio Display", control: .ddc, level: 0.5, hasError: false),
+        ])
+    }
+
+    /// Sample screenshots: a title, an SF Symbol and a gradient, drawn on demand (no bundled assets).
+    private struct DemoScreenshot: Sendable {
+        let id: UUID
+        let title: String
+        let symbolName: String
+        /// Gradient start and end as 0xRRGGBB.
+        let colors: (UInt32, UInt32)
+        let isPinned: Bool
+        let minutesAgo: Double
+    }
+
+    private nonisolated static let demoScreenshots: [DemoScreenshot] = [
+        .init(id: UUID(uuidString: "00000000-0000-0000-0000-00000000D101")!, title: "Release Notes", symbolName: "doc.text.fill",
+              colors: (0x4B3FD8, 0x9B4DDB), isPinned: true, minutesAgo: 240),
+        .init(id: UUID(uuidString: "00000000-0000-0000-0000-00000000D102")!, title: "Dashboard", symbolName: "chart.bar.xaxis",
+              colors: (0x1FA5B8, 0x2D6BE4), isPinned: false, minutesAgo: 5),
+        .init(id: UUID(uuidString: "00000000-0000-0000-0000-00000000D103")!, title: "Design Review", symbolName: "paintpalette.fill",
+              colors: (0xF2994A, 0xE0457B), isPinned: false, minutesAgo: 45),
+        .init(id: UUID(uuidString: "00000000-0000-0000-0000-00000000D104")!, title: "Terminal", symbolName: "terminal.fill",
+              colors: (0x3A3F47, 0x111316), isPinned: false, minutesAgo: 180),
+    ]
+
+    /// Four PNG screenshots in the Mac's display order (pinned first, then newest first).
+    nonisolated static func makeScreenshotLibrary() -> RemoteScreenshotLibrary {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let items = demoScreenshots.map { shot in
+            RemoteScreenshotItem(
+                id: shot.id,
+                fileName: "\(shot.title).png",
+                contentType: "public.png",
+                createdAt: now.addingTimeInterval(-shot.minutesAgo * 60),
+                isPinned: shot.isPinned,
+                revision: 1,
+                byteCount: 180_000
+            )
+        }
+        return .init(revision: 1, isCollectionEnabled: true, items: items)
+    }
+
+    private nonisolated static func cgColor(_ rgb: UInt32) -> CGColor {
+        CGColor(
+            red: CGFloat((rgb >> 16) & 0xFF) / 255,
+            green: CGFloat((rgb >> 8) & 0xFF) / 255,
+            blue: CGFloat(rgb & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    /// Renders a 16:10 sample screenshot `width` points wide at scale 1, so pixels equal points.
+    nonisolated static func demoScreenshotImage(for item: RemoteScreenshotItem, width: CGFloat) -> UIImage {
+        let shot = demoScreenshots.first { $0.id == item.id }
+        let size = CGSize(width: width, height: (width * 10 / 16).rounded())
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        return UIGraphicsImageRenderer(size: size, format: format).image { context in
+            let colors = shot?.colors ?? (0x8E8E93, 0x48484A)
+            let gradient = CGGradient(
+                colorsSpace: CGColorSpaceCreateDeviceRGB(),
+                colors: [cgColor(colors.0), cgColor(colors.1)] as CFArray,
+                locations: [0, 1]
+            )
+            if let gradient {
+                context.cgContext.drawLinearGradient(
+                    gradient,
+                    start: .zero,
+                    end: CGPoint(x: size.width, y: size.height),
+                    options: []
+                )
+            }
+            let unit = size.height / 10
+            let configuration = UIImage.SymbolConfiguration(pointSize: unit * 2.6, weight: .semibold)
+            if let symbol = UIImage(systemName: shot?.symbolName ?? "photo", withConfiguration: configuration)?
+                .withTintColor(.white, renderingMode: .alwaysOriginal) {
+                symbol.draw(at: CGPoint(x: (size.width - symbol.size.width) / 2, y: unit * 2.4))
+            }
+            let title = (shot?.title ?? item.fileName) as NSString
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: unit * 0.9, weight: .bold),
+                .foregroundColor: UIColor.white,
+            ]
+            let titleSize = title.size(withAttributes: attributes)
+            title.draw(at: CGPoint(x: (size.width - titleSize.width) / 2, y: unit * 6.4), withAttributes: attributes)
+        }
+    }
+
+    private nonisolated static func makeSoundMixerSnapshot() -> RemoteSoundMixerSnapshot {
+        .init(
+            revision: 1,
+            isEnabled: true,
+            systemVolume: 62,
+            output: .init(name: "Studio Display Speakers", symbolName: "display"),
+            apps: [
+                .init(
+                    id: "com.apple.Music",
+                    name: "Music",
+                    volume: 80,
+                    isMuted: false,
+                    equalizer: .init(gains: [3, 2, 1, 0, -1, 0, 1, 2, 3, 2], status: .active),
+                    routing: .init(selectedDeviceIDs: [], status: .followingSystem)
+                ),
+                .init(
+                    id: "com.apple.Safari",
+                    name: "Safari",
+                    volume: 45,
+                    isMuted: false,
+                    equalizer: .init(gains: [], status: .flat),
+                    routing: .init(selectedDeviceIDs: [], status: .followingSystem)
+                ),
+            ],
+            outputDevices: [
+                .init(id: "review-studio-display", name: "Studio Display Speakers", isDefault: true),
+                .init(id: "review-airpods", name: "AirPods Pro", isDefault: false),
+            ]
+        )
     }
 
     private nonisolated static func makeDescriptor(
@@ -444,9 +718,54 @@ extension RemoteConnectionClient {
             forgetMac: { await runtime.forget($0) },
             subscribe: { try await runtime.subscribe($0) },
             send: { try await runtime.send($0) },
-            sendSoundMixer: { _ in },
+            fetchCodexUsage: { invocation in
+                let snapshot = await runtime.connectionSnapshot()
+                guard invocation.macID == snapshot.authenticatedMacID,
+                      invocation.sessionID == snapshot.authenticatedSessionID else {
+                    throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+                }
+                return .init(
+                    requestID: invocation.request.requestID,
+                    result: .success(.init(
+                        account: .init(email: "review@example.com", plan: "Plus"),
+                        session: .init(remainingPercent: 82, resetAt: Date(timeIntervalSince1970: 1_800_003_600)),
+                        weekly: .init(remainingPercent: 64, resetAt: Date(timeIntervalSince1970: 1_800_604_800)),
+                        resetCredits: .available(count: 3, expiresAt: Date(timeIntervalSince1970: 1_800_086_400)),
+                        creditBalance: .available(remaining: 12.5, limit: 50, unit: "credits"),
+                        source: .oauth,
+                        fetchedAt: Date(timeIntervalSince1970: 1_800_000_000),
+                        activity: invocation.request.includeLocalActivity ? .init(
+                            dailyUsage: [.init(date: Date(timeIntervalSince1970: 1_800_000_000), tokenCount: 12_345)],
+                            isPartial: false
+                        ) : nil
+                    ))
+                )
+            },
+            fetchClaudeUsage: { invocation in
+                let snapshot = await runtime.connectionSnapshot()
+                guard invocation.macID == snapshot.authenticatedMacID, invocation.sessionID == snapshot.authenticatedSessionID else {
+                    throw RemoteProtocolError(code: .authenticationFailed, message: "The selected Mac session changed")
+                }
+                return .init(requestID: invocation.request.requestID, result: .success(.init(
+                    account: .init(email: "review@example.com", plan: "Pro"),
+                    session: .init(remainingPercent: 75, resetAt: Date(timeIntervalSince1970: 1_800_003_600)),
+                    weekly: .init(remainingPercent: 64, resetAt: Date(timeIntervalSince1970: 1_800_604_800)),
+                    models: [.init(id: "seven_day_sonnet", name: "Sonnet", quota: .init(remainingPercent: 90, resetAt: nil))],
+                    extraUsage: .init(isEnabled: false, used: nil, limit: nil, currency: nil, utilization: nil),
+                    fetchedAt: Date(timeIntervalSince1970: 1_800_000_000)) ))
+            },
+            sendSoundMixer: { await runtime.sendSoundMixer($0) },
             setSystemMonitorStreaming: { _ in },
-            setForegrounded: { _ in }
+            setSoundMixerStreaming: { await runtime.setSoundMixerStreaming($0) },
+            setBrightnessStreaming: { await runtime.setBrightnessStreaming($0) },
+            sendBrightness: { await runtime.sendBrightness($0) },
+            setScreenshotsStreaming: { await runtime.setScreenshotsStreaming($0) },
+            fetchScreenshotThumbnails: { try await runtime.screenshotThumbnails($0) },
+            fetchScreenshotImage: { try await runtime.screenshotImage($0) },
+            deleteScreenshots: { try await runtime.deleteScreenshots($0) },
+            setForegrounded: { _ in },
+            // The demo never closes its session in the background, so a transfer needs no hold.
+            withBackgroundTransferHold: { try await $0() }
         )
     }
 }
@@ -475,6 +794,8 @@ extension RemotePersistenceClient {
             saveStatuses: { await runtime.setStatuses($1, for: $0) },
             replaceStatusSnapshot: { await runtime.setStatuses($1, for: $0) },
             mergeStatus: { await runtime.mergeStatus($1, for: $0) },
+            loadAphroditeLibrary: { _ in nil },
+            replaceAphroditeLibrary: { _, _ in },
             markMacTombstoned: { await runtime.markTombstoned($0) },
             preparePairingState: { await runtime.preparePairingState($0, transactionID: $1, credentialVerifier: $2) },
             loadPreparedPairingState: { await runtime.loadPreparedPairingState() },
@@ -486,6 +807,25 @@ extension RemotePersistenceClient {
             restorePairingSnapshot: { await runtime.restorePairingSnapshot(macID: $0, snapshot: $1) },
             isMacTombstoned: { await runtime.isTombstoned($0) },
             forgetMac: { await runtime.forget($0) }
+        )
+    }
+}
+
+extension RemoteScreenshotCacheClient {
+    /// The review demo's own cache in the temporary directory, apart from `Caches/OnlyRemote/Screenshots`.
+    static var reviewDemo: Self {
+        live(root: FileManager.default.temporaryDirectory.appendingPathComponent("OnlyRemoteReviewDemo/Screenshots", isDirectory: true))
+    }
+}
+
+extension RemoteScreenshotImageClient {
+    /// Loads demo originals through the demo connection into the demo cache, never the live ones.
+    static func reviewDemo(connection: RemoteConnectionClient, cache: RemoteScreenshotCacheClient) -> Self {
+        .live(
+            cache: cache,
+            fetchImage: { try await connection.fetchScreenshotImage($0) },
+            holdTransfer: { try await connection.withBackgroundTransferHold($0) },
+            makeRequestID: { UUID() }
         )
     }
 }

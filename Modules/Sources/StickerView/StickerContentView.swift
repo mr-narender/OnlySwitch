@@ -16,12 +16,12 @@ struct StickerContentView: View {
             if store.previewMode {
                 StickerMarkdownPreviewView(content: store.stickerContent)
             } else {
-                TextEditor(text: $store.stickerContent)
-                    .font(.system(size: 15))
-                    .frame(minWidth: 200, minHeight: 200)
-                    .scrollContentBackground(.hidden)
-                    .foregroundStyle(.black)
-                    .background(.clear)
+                StickerTextEditor(
+                    text: $store.stickerContent,
+                    tint: store.stickerColor.stroke.withAlphaComponent(1),
+                    checklistToggleRequestID: store.checklistToggleRequestID
+                )
+                .frame(minWidth: 200, minHeight: 200)
             }
         }
     }

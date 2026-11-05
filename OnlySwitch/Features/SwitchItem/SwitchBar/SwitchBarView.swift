@@ -34,7 +34,17 @@ struct SwitchBarView: View {
             } else if switchOption.switchType == .pomodoroTimer {
                 TimerCountDownView(ptswitch: switchOption.switchOperator as! PomodoroTimerSwitch)
             }
-            else {
+            else if let address = switchOption.copyableInfo {
+                Button {
+                    Task { await switchOption.copyInfo(displayedInfo: address) }
+                } label: {
+                    Text(address).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+                .buttonStyle(.plain)
+                .help("Copy".localized())
+                .accessibilityLabel("Copy".localized())
+                .accessibilityValue(address)
+            } else {
                 Text(switchOption.info.localized())
                     .foregroundColor(.gray)
             }
@@ -119,6 +129,15 @@ struct SwitchBarView: View {
                         Task { @MainActor [switchOption] in
                             await switchOption.openPrivilegedHelperSettings()
                         }
+                    },
+                    secondaryButton: .cancel()
+                )
+            case .openTailscaleSettings:
+                Alert(
+                    title: Text("Tailscale Operation Failed".localized()),
+                    message: Text(switchOption.info.localized()),
+                    primaryButton: .default(Text("Tailscale Settings".localized())) {
+                        switchOption.openTailscaleSettings()
                     },
                     secondaryButton: .cancel()
                 )

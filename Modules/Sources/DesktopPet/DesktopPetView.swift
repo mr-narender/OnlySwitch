@@ -7,57 +7,66 @@ public struct DesktopPetView: View {
     private let isDragging: Bool
     private let isControlPresented: Bool
     private let pomodoroState: DesktopPetPomodoroState?
+    private let isMusicPlaying: Bool
 
     public init(
         isActive: Bool = true,
         isDragging: Bool = false,
         isControlPresented: Bool = false,
-        pomodoroState: DesktopPetPomodoroState? = nil
+        pomodoroState: DesktopPetPomodoroState? = nil,
+        isMusicPlaying: Bool = false
     ) {
         self.isActive = isActive
         self.isDragging = isDragging
         self.isControlPresented = isControlPresented
         self.pomodoroState = pomodoroState
+        self.isMusicPlaying = isMusicPlaying
     }
 
     public var body: some View {
-        ZStack(alignment: .top) {
-            TimelineView(
-                .animation(
-                    minimumInterval: 1.0 / 30.0,
-                    paused: !isActive || isDragging || reduceMotion
+        TimelineView(
+            .animation(
+                minimumInterval: DesktopPetRefreshPolicy.minimumInterval,
+                paused: DesktopPetRefreshPolicy.isPaused(
+                    isActive: isActive,
+                    isDragging: isDragging,
+                    reduceMotion: reduceMotion
                 )
-            ) { context in
+            )
+        ) { context in
+            let motion = DesktopPetMotion.values(
+                at: context.date,
+                pomodoroState: pomodoroState,
+                isActive: isActive,
+                isDragging: isDragging,
+                reduceMotion: reduceMotion,
+                isMusicPlaying: isMusicPlaying
+            )
+
+            ZStack(alignment: .top) {
                 DesktopPetArtwork(
-                    motion: DesktopPetMotion.values(
-                        at: context.date,
-                        pomodoroState: pomodoroState,
-                        isActive: isActive,
-                        isDragging: isDragging,
-                        reduceMotion: reduceMotion
-                    ),
+                    motion: motion,
                     pomodoroPhase: pomodoroState?.phase,
                     isControlPresented: isControlPresented,
                     isDragging: isDragging,
-                    reduceMotion: reduceMotion
+                    reduceMotion: reduceMotion,
+                    isMusicPlaying: isMusicPlaying
                 )
                 .frame(
                     width: DesktopPetMetrics.artworkSize.width,
                     height: DesktopPetMetrics.artworkSize.height
                 )
-            }
-            .offset(
-                y: DesktopPetMetrics.artworkOffsetY(for: pomodoroState)
-            )
-
-            if let pomodoroState {
-                DesktopPetPomodoroBadge(
-                    state: pomodoroState,
-                    isActive: isActive,
-                    isDragging: isDragging,
-                    reduceMotion: reduceMotion
+                .offset(
+                    y: DesktopPetMetrics.artworkOffsetY(for: pomodoroState)
                 )
-                .frame(height: DesktopPetMetrics.pomodoroTimerLane.height)
+
+                if let pomodoroState {
+                    DesktopPetPomodoroBadge(
+                        state: pomodoroState,
+                        motion: motion
+                    )
+                    .frame(height: DesktopPetMetrics.pomodoroTimerLane.height)
+                }
             }
         }
         .frame(

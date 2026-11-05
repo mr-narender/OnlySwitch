@@ -1,4 +1,5 @@
 import CryptoKit
+import Aphrodite
 import Foundation
 import Network
 import RemoteCore
@@ -109,6 +110,14 @@ actor RemotePeerSession {
     private let authenticationAuthorized: @Sendable (UUID, UUID) async -> Bool
     private let authenticationConfirmed: @Sendable (UUID, UUID) async -> Bool
     private let systemMonitorSnapshots: @Sendable () -> AsyncThrowingStream<SystemMonitorSnapshot, Error>
+    private let soundMixerSnapshots: @Sendable () -> AsyncThrowingStream<RemoteSoundMixerSnapshot, Error>
+    private let soundMixerCommand: @Sendable (RemoteSoundMixerCommand) async throws -> RemoteSoundMixerSnapshot
+    private let brightnessSnapshots: @Sendable (UUID) -> AsyncStream<RemoteBrightnessSnapshot>
+    private let brightnessCommand: @Sendable (RemoteBrightnessCommand) async throws -> RemoteBrightnessSnapshot
+    private let screenshots: RemoteScreenshotsService
+    private let claudeUsage: @Sendable () async -> Result<RemoteClaudeUsageSnapshot, RemoteProtocolError>
+    private let codexUsage: @Sendable (Bool) async -> Result<RemoteCodexUsageSnapshot, RemoteProtocolError>
+    private let aphroditeSnapshotMessages: @Sendable () async throws -> [RemoteMessage]
     private let authenticationResultSender: AuthenticationResultSender
     private let commitStageReached: @Sendable (RemotePairingCommitStage) async -> Void
     private let ended: @Sendable (UUID) async -> Void
@@ -120,6 +129,18 @@ actor RemotePeerSession {
     private var negotiatedVersion: RemoteProtocolVersion?
     private var advertisedCatalogRevision: UInt64?
     private var systemMonitorTask: Task<Void, Never>?
+    private var soundMixerTask: Task<Void, Never>?
+    private var brightnessTask: Task<Void, Never>?
+    private var screenshotsLibraryTask: Task<Void, Never>?
+    /// Thumbnail requests run serially; each new one chains after the previous.
+    private var screenshotThumbnailsTask: Task<Void, Never>?
+    /// At most one original is transferred; a newer request cancels the older one.
+    private var screenshotImageTask: Task<Void, Never>?
+    private var claudeUsageTask: Task<Void, Never>?
+    private var claudeUsageGeneration: UInt64 = 0
+    private var codexUsageTask: Task<Void, Never>?
+    private var codexUsageGeneration: UInt64 = 0
+    private var aphroditeChangesTask: Task<Void, Never>?
 
     init(
         id: UUID = UUID(),
@@ -143,6 +164,30 @@ actor RemotePeerSession {
         authenticationAuthorized: @escaping @Sendable (UUID, UUID) async -> Bool,
         authenticationConfirmed: @escaping @Sendable (UUID, UUID) async -> Bool,
         systemMonitorSnapshots: @escaping @Sendable () -> AsyncThrowingStream<SystemMonitorSnapshot, Error>,
+        soundMixerSnapshots: @escaping @Sendable () -> AsyncThrowingStream<RemoteSoundMixerSnapshot, Error> = {
+            AsyncThrowingStream {
+                $0.finish(throwing: RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer is unavailable"))
+            }
+        },
+        soundMixerCommand: @escaping @Sendable (RemoteSoundMixerCommand) async throws -> RemoteSoundMixerSnapshot = { _ in
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer is unavailable")
+        },
+        brightnessSnapshots: @escaping @Sendable (UUID) -> AsyncStream<RemoteBrightnessSnapshot> = { _ in
+            AsyncStream { $0.finish() }
+        },
+        brightnessCommand: @escaping @Sendable (RemoteBrightnessCommand) async throws -> RemoteBrightnessSnapshot = { _ in
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Brightness is unavailable")
+        },
+        screenshots: RemoteScreenshotsService = .unavailable,
+        codexUsage: @escaping @Sendable (Bool) async -> Result<RemoteCodexUsageSnapshot, RemoteProtocolError> = { _ in
+            .failure(.init(code: .actionNotSupported, message: "Codex usage is unavailable"))
+        },
+        claudeUsage: @escaping @Sendable () async -> Result<RemoteClaudeUsageSnapshot, RemoteProtocolError> = {
+            .failure(.init(code: .actionNotSupported, message: "Claude usage is unavailable"))
+        },
+        aphroditeSnapshotMessages: @escaping @Sendable () async throws -> [RemoteMessage] = {
+            try await RemoteAphroditeSnapshotProvider.liveMessages()
+        },
         authenticationResultSender: @escaping AuthenticationResultSender = { operation in
             try await operation()
         },
@@ -171,6 +216,14 @@ actor RemotePeerSession {
         self.authenticationAuthorized = authenticationAuthorized
         self.authenticationConfirmed = authenticationConfirmed
         self.systemMonitorSnapshots = systemMonitorSnapshots
+        self.soundMixerSnapshots = soundMixerSnapshots
+        self.soundMixerCommand = soundMixerCommand
+        self.brightnessSnapshots = brightnessSnapshots
+        self.brightnessCommand = brightnessCommand
+        self.screenshots = screenshots
+        self.codexUsage = codexUsage
+        self.claudeUsage = claudeUsage
+        self.aphroditeSnapshotMessages = aphroditeSnapshotMessages
         self.authenticationResultSender = authenticationResultSender
         self.commitStageReached = commitStageReached
         self.ended = ended
@@ -193,6 +246,16 @@ actor RemotePeerSession {
             await rollbackPendingPairingIfNeeded()
         }
         stopSystemMonitorStreaming()
+        stopSoundMixerStreaming()
+        stopBrightnessStreaming()
+        stopScreenshotsStreaming()
+        codexUsageTask?.cancel()
+        codexUsageTask = nil
+        claudeUsageTask?.cancel()
+        claudeUsageTask = nil
+        claudeUsageGeneration &+= 1
+        aphroditeChangesTask?.cancel()
+        aphroditeChangesTask = nil
         state = .closed
         await io.cancel()
         await ended(id)
@@ -203,6 +266,16 @@ actor RemotePeerSession {
             pendingPairing = nil
         }
         stopSystemMonitorStreaming()
+        stopSoundMixerStreaming()
+        stopBrightnessStreaming()
+        stopScreenshotsStreaming()
+        codexUsageTask?.cancel()
+        codexUsageTask = nil
+        claudeUsageTask?.cancel()
+        claudeUsageTask = nil
+        claudeUsageGeneration &+= 1
+        aphroditeChangesTask?.cancel()
+        aphroditeChangesTask = nil
         state = .closed
         await io.cancel()
         await ended(id)
@@ -520,6 +593,7 @@ actor RemotePeerSession {
         try requireAwaitingAuthentication()
         authenticatedCredential = credential
         state = .authenticated(client.deviceID)
+        startAphroditeChangeObservation()
         advertisedCatalogRevision = advertisedCatalog.revision
         guard await authenticationConfirmed(id, client.deviceID) else {
             throw RemoteProtocolError(code: .authenticationFailed, message: "Credential was revoked")
@@ -679,6 +753,7 @@ actor RemotePeerSession {
         try requireCommitting(committed.id, transactionID: command.transactionID)
         authenticatedCredential = committed.credential
         state = .authenticated(committed.id)
+        startAphroditeChangeObservation()
 
         // A monitor refresh can be skipped while this peer is still committing.
         // Re-read after the synchronous state transition so every revision is
@@ -749,15 +824,51 @@ actor RemotePeerSession {
                 try await sendEncrypted(.soundMixerSnapshot(await SoundMixerVM.shared.remoteSnapshot()))
             }
         case .soundMixerSnapshotRequest:
-            guard negotiatedVersion?.supportsSoundMixerRemote == true else {
-                throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer remote control requires a newer OnlySwitch")
-            }
+            try requireSoundMixer()
             try await sendEncrypted(.soundMixerSnapshot(await SoundMixerVM.shared.remoteSnapshot()))
         case let .soundMixerCommand(command):
-            guard negotiatedVersion?.supportsSoundMixerRemote == true else {
-                throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer remote control requires a newer OnlySwitch")
+            try requireSoundMixer()
+            if command.requiresSoundMixerTab { try requireSoundMixerTab() }
+            guard let snapshot = try await commandSnapshot({ try await soundMixerCommand(command) }) else { return }
+            try await sendEncrypted(.soundMixerSnapshot(snapshot))
+        case let .soundMixerSubscriptionUpdate(enabled):
+            try requireSoundMixerTab()
+            if enabled {
+                startSoundMixerStreaming()
+            } else {
+                stopSoundMixerStreaming()
             }
-            try await sendEncrypted(.soundMixerSnapshot(try await SoundMixerVM.shared.performRemoteCommand(command)))
+        case let .brightnessSubscriptionUpdate(enabled):
+            try requireBrightness()
+            if enabled {
+                startBrightnessStreaming()
+            } else {
+                stopBrightnessStreaming()
+            }
+        case let .brightnessCommand(command):
+            try requireBrightness()
+            guard let snapshot = try await commandSnapshot({ try await brightnessCommand(command) }) else { return }
+            try await sendEncrypted(.brightnessSnapshot(snapshot))
+        case let .screenshotsSubscriptionUpdate(enabled):
+            try requireScreenshots()
+            if enabled {
+                startScreenshotsStreaming()
+            } else {
+                stopScreenshotsStreaming()
+            }
+        case let .screenshotThumbnailsRequest(request):
+            try requireScreenshots()
+            guard try await acceptScreenshotRequest(request.requestID) else { return }
+            enqueueScreenshotThumbnails(request)
+        case let .screenshotImageRequest(request):
+            try requireScreenshots()
+            guard try await acceptScreenshotRequest(request.requestID) else { return }
+            startScreenshotImageTransfer(request)
+        case let .screenshotDeleteRequest(request):
+            try requireScreenshots()
+            guard try await acceptScreenshotRequest(request.requestID) else { return }
+            let failed = await screenshots.delete(request.ids)
+            try await sendEncrypted(.screenshotDeleteResult(.init(requestID: request.requestID, failedIDs: failed)))
         case let .systemMonitorSubscriptionUpdate(enabled):
             guard negotiatedVersion?.supportsSystemMonitorRemote == true else {
                 throw RemoteProtocolError(
@@ -770,6 +881,39 @@ actor RemotePeerSession {
             } else {
                 stopSystemMonitorStreaming()
             }
+        case let .codexUsageRequest(request):
+            guard negotiatedVersion?.supportsCodexUsageRemote == true else {
+                let error = RemoteProtocolError(code: .upgradeRequired, message: "Codex Usage requires a newer OnlySwitch")
+                try await sendEncrypted(.codexUsageResult(.init(requestID: request.requestID, result: .failure(error))))
+                return
+            }
+            codexUsageGeneration &+= 1
+            let generation = codexUsageGeneration
+            codexUsageTask?.cancel()
+            codexUsageTask = Task { [weak self, codexUsage] in
+                let result = await codexUsage(request.includeLocalActivity)
+                guard Task.isCancelled == false else { return }
+                try? await self?.finishCodexUsage(requestID: request.requestID, generation: generation, result: result)
+            }
+        case let .claudeUsageRequest(request):
+            guard negotiatedVersion?.supportsClaudeUsageRemote == true else {
+                let error = RemoteProtocolError(code: .upgradeRequired, message: "Claude Usage requires a newer OnlySwitch")
+                try await sendEncrypted(.claudeUsageResult(.init(requestID: request.requestID, result: .failure(error))))
+                return
+            }
+            claudeUsageGeneration &+= 1
+            let generation = claudeUsageGeneration
+            claudeUsageTask?.cancel()
+            claudeUsageTask = Task { [weak self, claudeUsage] in
+                let result = await claudeUsage()
+                guard Task.isCancelled == false else { return }
+                try? await self?.finishClaudeUsage(requestID: request.requestID, generation: generation, result: result)
+            }
+        case .aphroditeLibraryRequest:
+            guard negotiatedVersion?.supportsAphroditeRemote == true else {
+                throw RemoteProtocolError(code: .actionNotSupported, message: "Aphrodite sharing requires a newer OnlyRemote")
+            }
+            try await sendAphroditeSnapshotIfSupported()
         case let .pairingCommit(command):
             let status = try await credentialStore.transactionStatus(
                 command.transactionID,
@@ -814,6 +958,44 @@ actor RemotePeerSession {
         }
     }
 
+    private func sendAphroditeSnapshotIfSupported() async throws {
+        guard case .authenticated = state, negotiatedVersion?.supportsAphroditeRemote == true else { return }
+        for message in try await aphroditeSnapshotMessages() {
+            try Task.checkCancellation()
+            try await sendEncrypted(message)
+        }
+    }
+
+    private func startAphroditeChangeObservation() {
+        aphroditeChangesTask?.cancel()
+        aphroditeChangesTask = Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(named: .aphroditeLibraryChanged) {
+                guard Task.isCancelled == false else { return }
+                try? await self?.sendAphroditeSnapshotIfSupported()
+            }
+        }
+    }
+
+    private func finishCodexUsage(
+        requestID: UUID,
+        generation: UInt64,
+        result: Result<RemoteCodexUsageSnapshot, RemoteProtocolError>
+    ) async throws {
+        guard generation == codexUsageGeneration, case .authenticated = state else { return }
+        codexUsageTask = nil
+        try await sendEncrypted(.codexUsageResult(.init(requestID: requestID, result: result)))
+    }
+
+    private func finishClaudeUsage(
+        requestID: UUID,
+        generation: UInt64,
+        result: Result<RemoteClaudeUsageSnapshot, RemoteProtocolError>
+    ) async throws {
+        guard generation == claudeUsageGeneration, case .authenticated = state else { return }
+        claudeUsageTask = nil
+        try await sendEncrypted(.claudeUsageResult(.init(requestID: requestID, result: result)))
+    }
+
     private func sendCatalog() async throws {
         let snapshot = try await catalogSnapshot()
         guard snapshot.controls.allSatisfy({ descriptor in
@@ -849,6 +1031,171 @@ actor RemotePeerSession {
     private func stopSystemMonitorStreaming() {
         systemMonitorTask?.cancel()
         systemMonitorTask = nil
+    }
+
+    /// Commands race against apps, devices, and displays disappearing on the Mac. A failed
+    /// command is dropped without a reply; the active subscription stream re-syncs the peer.
+    private func commandSnapshot<Snapshot: Sendable>(
+        _ perform: @Sendable () async throws -> Snapshot
+    ) async throws -> Snapshot? {
+        do {
+            return try await perform()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+    }
+
+    private func requireSoundMixer() throws {
+        guard negotiatedVersion?.supportsSoundMixerRemote == true else {
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer remote control requires a newer OnlySwitch")
+        }
+    }
+
+    private func requireSoundMixerTab() throws {
+        guard negotiatedVersion?.supportsSoundMixerTabRemote == true else {
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer tab requires a newer OnlySwitch")
+        }
+    }
+
+    private func requireBrightness() throws {
+        guard negotiatedVersion?.supportsBrightnessRemote == true else {
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Brightness remote control requires a newer OnlySwitch")
+        }
+    }
+
+    private func startSoundMixerStreaming() {
+        stopSoundMixerStreaming()
+        let snapshots = soundMixerSnapshots
+        soundMixerTask = Task { [weak self] in
+            do {
+                for try await snapshot in snapshots() {
+                    try Task.checkCancellation()
+                    guard let self else { return }
+                    try await self.sendEncrypted(.soundMixerSnapshot(snapshot))
+                }
+            } catch is CancellationError {
+            } catch {
+                // Mixer failures affect only the Sound Mixer tab; controls stay connected.
+            }
+        }
+    }
+
+    private func stopSoundMixerStreaming() {
+        soundMixerTask?.cancel()
+        soundMixerTask = nil
+    }
+
+    private func startBrightnessStreaming() {
+        stopBrightnessStreaming()
+        let snapshots = brightnessSnapshots
+        let hostID = id
+        brightnessTask = Task { [weak self] in
+            do {
+                for await snapshot in snapshots(hostID) {
+                    try Task.checkCancellation()
+                    guard let self else { return }
+                    try await self.sendEncrypted(.brightnessSnapshot(snapshot))
+                }
+            } catch {
+                // Send failures end only the brightness stream; the session loop handles disconnects.
+            }
+        }
+    }
+
+    private func stopBrightnessStreaming() {
+        brightnessTask?.cancel()
+        brightnessTask = nil
+    }
+
+    private func requireScreenshots() throws {
+        guard negotiatedVersion?.supportsScreenshotsRemote == true else {
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Screenshots remote viewing requires a newer OnlySwitch")
+        }
+    }
+
+    /// Only a subscribed session may read or trash screenshots; others get a failure reply, not a closed session.
+    private func acceptScreenshotRequest(_ requestID: UUID) async throws -> Bool {
+        guard screenshotsLibraryTask == nil else { return true }
+        try await sendEncrypted(.screenshotRequestFailed(.init(
+            requestID: requestID,
+            error: .init(code: .actionNotSupported, message: "Subscribe to screenshots first")
+        )))
+        return false
+    }
+
+    private func startScreenshotsStreaming() {
+        stopScreenshotsStreaming()
+        let libraries = screenshots.libraries
+        screenshotsLibraryTask = Task { [weak self] in
+            do {
+                for await library in libraries() {
+                    try Task.checkCancellation()
+                    guard let self else { return }
+                    try await self.sendEncrypted(.screenshotsLibrary(library))
+                }
+            } catch {
+                // Send failures end only the screenshot stream; the session loop handles disconnects.
+            }
+        }
+    }
+
+    private func enqueueScreenshotThumbnails(_ request: RemoteScreenshotThumbnailsRequest) {
+        let previous = screenshotThumbnailsTask
+        let thumbnails = screenshots.thumbnails
+        screenshotThumbnailsTask = Task { [weak self] in
+            // Cancelling the newest request cancels the whole queue behind it.
+            await withTaskCancellationHandler {
+                await previous?.value
+            } onCancel: {
+                previous?.cancel()
+            }
+            guard Task.isCancelled == false else { return }
+            let result = await thumbnails(request.ids)
+            guard Task.isCancelled == false else { return }
+            try? await self?.sendEncrypted(.screenshotThumbnailsResult(.init(
+                requestID: request.requestID,
+                thumbnails: result.thumbnails,
+                missingIDs: result.missingIDs
+            )))
+        }
+    }
+
+    private func startScreenshotImageTransfer(_ request: RemoteScreenshotImageRequest) {
+        screenshotImageTask?.cancel()
+        let image = screenshots.image
+        screenshotImageTask = Task { [weak self] in
+            do {
+                let original = try await image(request.itemID, request.revision)
+                let messages = try RemoteScreenshotImageEncoder.messages(
+                    request: request,
+                    contentType: original.contentType,
+                    data: original.data
+                )
+                for message in messages {
+                    try Task.checkCancellation()
+                    guard let self else { return }
+                    try await self.sendEncrypted(message)
+                }
+            } catch is CancellationError {
+            } catch {
+                // A superseded transfer ends silently; the peer has already moved on to the newer request.
+                guard Task.isCancelled == false else { return }
+                let failure = error as? RemoteProtocolError
+                    ?? RemoteProtocolError(code: .executionFailed, message: "The screenshot could not be sent")
+                try? await self?.sendEncrypted(.screenshotRequestFailed(.init(requestID: request.requestID, error: failure)))
+            }
+        }
+    }
+
+    private func stopScreenshotsStreaming() {
+        screenshotsLibraryTask?.cancel()
+        screenshotsLibraryTask = nil
+        screenshotThumbnailsTask?.cancel()
+        screenshotThumbnailsTask = nil
+        screenshotImageTask?.cancel()
+        screenshotImageTask = nil
     }
 
     private func sendEncrypted(_ message: RemoteMessage) async throws {

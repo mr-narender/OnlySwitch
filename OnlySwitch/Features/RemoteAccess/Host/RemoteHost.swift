@@ -23,6 +23,15 @@ actor RemoteHost {
     private let commitStageReached: @Sendable (RemotePairingCommitStage) async -> Void
     private let authenticatedSessionObserver: @Sendable () -> Void
     private let systemMonitorSnapshots: @Sendable () -> AsyncThrowingStream<SystemMonitorSnapshot, Error>
+    private let soundMixerSnapshots: @Sendable () -> AsyncThrowingStream<RemoteSoundMixerSnapshot, Error>
+    private let soundMixerCommand: @Sendable (RemoteSoundMixerCommand) async throws -> RemoteSoundMixerSnapshot
+    private let brightnessSnapshots: @Sendable (UUID) -> AsyncStream<RemoteBrightnessSnapshot>
+    private let brightnessCommand: @Sendable (RemoteBrightnessCommand) async throws -> RemoteBrightnessSnapshot
+    /// nil resolves `RemoteScreenshotsService.live` on the main actor when the listener starts.
+    private let screenshots: RemoteScreenshotsService?
+    private var resolvedScreenshots: RemoteScreenshotsService?
+    private let claudeUsage: @Sendable () async -> Result<RemoteClaudeUsageSnapshot, RemoteProtocolError>
+    private let codexUsage: @Sendable (Bool) async -> Result<RemoteCodexUsageSnapshot, RemoteProtocolError>
     private var eventContinuations: [
         UUID: AsyncStream<RemoteHostEvent>.Continuation
     ] = [:]
@@ -55,7 +64,42 @@ actor RemoteHost {
         authenticatedSessionObserver: @escaping @Sendable () -> Void = {},
         systemMonitorSnapshots: @escaping @Sendable () -> AsyncThrowingStream<SystemMonitorSnapshot, Error> = {
             MacSystemMonitorCollector.liveClient().snapshots()
-        }
+        },
+        soundMixerSnapshots: @escaping @Sendable () -> AsyncThrowingStream<RemoteSoundMixerSnapshot, Error> = {
+            AsyncThrowingStream { continuation in
+                let task = Task { @MainActor in
+                    do {
+                        for try await snapshot in SoundMixerVM.shared.remoteSnapshots() {
+                            continuation.yield(snapshot)
+                        }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
+                    }
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        },
+        soundMixerCommand: @escaping @Sendable (RemoteSoundMixerCommand) async throws -> RemoteSoundMixerSnapshot = { command in
+            try await SoundMixerVM.shared.performRemoteCommand(command)
+        },
+        brightnessSnapshots: @escaping @Sendable (UUID) -> AsyncStream<RemoteBrightnessSnapshot> = { hostID in
+            AsyncStream { continuation in
+                let task = Task { @MainActor in
+                    for await snapshot in RemoteBrightnessProvider.shared.snapshots(hostID: hostID) {
+                        continuation.yield(snapshot)
+                    }
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+        },
+        brightnessCommand: @escaping @Sendable (RemoteBrightnessCommand) async throws -> RemoteBrightnessSnapshot = { command in
+            try await MainActor.run { try RemoteBrightnessProvider.shared.perform(command) }
+        },
+        screenshots: RemoteScreenshotsService? = nil,
+        codexUsage: @escaping @Sendable (Bool) async -> Result<RemoteCodexUsageSnapshot, RemoteProtocolError> = RemoteCodexUsageProvider.live.fetch,
+        claudeUsage: @escaping @Sendable () async -> Result<RemoteClaudeUsageSnapshot, RemoteProtocolError> = RemoteClaudeUsageProvider.live.fetch
     ) {
         self.credentialStore = credentialStore
         self.catalogProvider = catalogProvider
@@ -71,6 +115,13 @@ actor RemoteHost {
         self.commitStageReached = commitStageReached
         self.authenticatedSessionObserver = authenticatedSessionObserver
         self.systemMonitorSnapshots = systemMonitorSnapshots
+        self.soundMixerSnapshots = soundMixerSnapshots
+        self.soundMixerCommand = soundMixerCommand
+        self.brightnessSnapshots = brightnessSnapshots
+        self.brightnessCommand = brightnessCommand
+        self.screenshots = screenshots
+        self.codexUsage = codexUsage
+        self.claudeUsage = claudeUsage
         self.statusScheduler = RemoteStatusScheduler(provider: catalogProvider)
         self.catalogMonitor = RemoteCatalogMonitor(provider: catalogProvider)
     }
@@ -87,6 +138,7 @@ actor RemoteHost {
         router: RemoteCommandRouter,
         pairingCode: String,
         peerDeadlines: RemotePeerDeadlines = .init(),
+        credentialStore: RemoteCredentialStore? = nil,
         listenerFactory: @escaping @Sendable (NWEndpoint.Port) throws -> NWListener = {
             try NWListener(using: .tcp, on: $0)
         },
@@ -100,6 +152,27 @@ actor RemoteHost {
         finalizeRepairObserver: @escaping @Sendable (UUID) -> Void = { _ in },
         systemMonitorSnapshots: @escaping @Sendable () -> AsyncThrowingStream<SystemMonitorSnapshot, Error> = {
             MacSystemMonitorCollector.liveClient().snapshots()
+        },
+        soundMixerSnapshots: @escaping @Sendable () -> AsyncThrowingStream<RemoteSoundMixerSnapshot, Error> = {
+            AsyncThrowingStream {
+                $0.finish(throwing: RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer is unavailable"))
+            }
+        },
+        soundMixerCommand: @escaping @Sendable (RemoteSoundMixerCommand) async throws -> RemoteSoundMixerSnapshot = { _ in
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Sound Mixer is unavailable")
+        },
+        brightnessSnapshots: @escaping @Sendable (UUID) -> AsyncStream<RemoteBrightnessSnapshot> = { _ in
+            AsyncStream { $0.finish() }
+        },
+        brightnessCommand: @escaping @Sendable (RemoteBrightnessCommand) async throws -> RemoteBrightnessSnapshot = { _ in
+            throw RemoteProtocolError(code: .actionNotSupported, message: "Brightness is unavailable")
+        },
+        screenshots: RemoteScreenshotsService = .unavailable,
+        codexUsage: @escaping @Sendable (Bool) async -> Result<RemoteCodexUsageSnapshot, RemoteProtocolError> = { _ in
+            .failure(.init(code: .actionNotSupported, message: "Codex usage is unavailable"))
+        },
+        claudeUsage: @escaping @Sendable () async -> Result<RemoteClaudeUsageSnapshot, RemoteProtocolError> = {
+            .failure(.init(code: .actionNotSupported, message: "Claude usage is unavailable"))
         }
     ) -> RemoteHost {
         let fixedProvider = RemoteCatalogProvider(
@@ -122,7 +195,7 @@ actor RemoteHost {
         )
         let provider = injectedCatalogProvider ?? fixedProvider
         return RemoteHost(
-            credentialStore: .inMemory(finalizeRepairObserver: finalizeRepairObserver),
+            credentialStore: credentialStore ?? .inMemory(finalizeRepairObserver: finalizeRepairObserver),
             catalogProvider: provider,
             router: router,
             fixedPairingCode: pairingCode,
@@ -133,7 +206,14 @@ actor RemoteHost {
             authenticationResultSender: authenticationResultSender,
             commitStageReached: commitStageReached,
             authenticatedSessionObserver: authenticatedSessionObserver,
-            systemMonitorSnapshots: systemMonitorSnapshots
+            systemMonitorSnapshots: systemMonitorSnapshots,
+            soundMixerSnapshots: soundMixerSnapshots,
+            soundMixerCommand: soundMixerCommand,
+            brightnessSnapshots: brightnessSnapshots,
+            brightnessCommand: brightnessCommand,
+            screenshots: screenshots,
+            codexUsage: codexUsage,
+            claudeUsage: claudeUsage
         )
     }
 
@@ -281,11 +361,13 @@ actor RemoteHost {
         advertise: Bool
     ) async throws -> NWEndpoint {
         if listener != nil { await stop() }
-        try await credentialStore.recoverExpiredTransactions()
+        await resolveScreenshotsIfNeeded()
         startCatalogObservationIfNeeded()
         let generation = lifecycle.beginStart()
         publish(.statusChanged(.starting))
         do {
+            // Keychain failures must surface as a failed status; otherwise the host silently never advertises.
+            try await credentialStore.recoverExpiredTransactions()
             let port = configuration.port == 0 ? NWEndpoint.Port.any : NWEndpoint.Port(rawValue: configuration.port)!
             let listener = try listenerFactory(port)
             self.listener = listener
@@ -348,6 +430,18 @@ actor RemoteHost {
             await listenerFailed(generation: generation)
             throw error
         }
+    }
+
+    /// The live service reads the main-actor Screenshots store, so it is built lazily rather than when
+    /// `shared` is first touched.
+    private func resolveScreenshotsIfNeeded() async {
+        guard resolvedScreenshots == nil else { return }
+        if let screenshots {
+            resolvedScreenshots = screenshots
+            return
+        }
+        let live = await MainActor.run { RemoteScreenshotsService.live }
+        resolvedScreenshots = resolvedScreenshots ?? live
     }
 
     private func publish(_ event: RemoteHostEvent) {
@@ -431,6 +525,13 @@ actor RemoteHost {
                 ) ?? false
             },
             systemMonitorSnapshots: systemMonitorSnapshots,
+            soundMixerSnapshots: soundMixerSnapshots,
+            soundMixerCommand: soundMixerCommand,
+            brightnessSnapshots: brightnessSnapshots,
+            brightnessCommand: brightnessCommand,
+            screenshots: resolvedScreenshots ?? .unavailable,
+            codexUsage: codexUsage,
+            claudeUsage: claudeUsage,
             authenticationResultSender: authenticationResultSender,
             commitStageReached: commitStageReached,
             ended: { [weak self] id in await self?.sessionEnded(id) },

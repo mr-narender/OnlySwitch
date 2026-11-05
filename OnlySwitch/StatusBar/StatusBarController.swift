@@ -12,6 +12,18 @@ import SwiftUI
 import Foundation
 import ComposableArchitecture
 import SystemMonitor
+import Screenshots
+
+enum ScreenshotShortcutAction: Equatable {
+    case none
+    case hide
+    case reveal
+
+    static func resolve(tabVisible: Bool, hostShown: Bool, selectedSection: SectionBar.Section) -> Self {
+        guard tabVisible else { return .none }
+        return hostShown && selectedSection == .screenshots ? .hide : .reveal
+    }
+}
 
 @MainActor
 class StatusBarController {
@@ -39,6 +51,10 @@ class StatusBarController {
     @UserDefaultValue(key: UserDefaults.Key.isMenubarCollapse, defaultValue: false)
     private var isMenubarCollapse:Bool
     private var hasOtherPopover = false
+    private let appearance: @MainActor () -> SwitchListAppearance
+    private let configuresSystemIntegrations: Bool
+    var listPreventsOutsideClickDismissal = false
+    var listSelectedSection: SectionBar.Section = .controls
 
     private var onlyControlWindow: OnlyControlWindow {
         OnlyControlWindow.shared
@@ -49,19 +65,24 @@ class StatusBarController {
     }
 
     var currentAppearance: SwitchListAppearance {
-        SwitchListAppearance(rawValue: Preferences.shared.currentAppearance) ?? .single
+        appearance()
     }
 
     var menubarCollaspable: Bool {
         Preferences.shared.menubarCollaspable
     }
 
-    init(_ popover: NSPopover) {
+    init(_ popover: NSPopover,
+         appearance: @escaping @MainActor () -> SwitchListAppearance = { SwitchListAppearance(rawValue: Preferences.shared.currentAppearance) ?? .single },
+         configuresSystemIntegrations: Bool = true) {
         self.popover = popover
+        self.appearance = appearance
+        self.configuresSystemIntegrations = configuresSystemIntegrations
 
         mainItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         Self.configureStatusItem(mainItem)
-        
+        guard configuresSystemIntegrations else { return }
+
         // macOS 26 Tahoe: Button might not be immediately available, retry if needed
         setupMainItemButtonWithRetry(image: currentMenubarIcon)
 
@@ -373,6 +394,16 @@ class StatusBarController {
         }
 
         NotificationCenter.default.addObserver(
+            forName: .revealScreenshotsSection,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.revealScreenshotsHost()
+            }
+        }
+
+        NotificationCenter.default.addObserver(
             forName: .menubarCollapsable,
             object: nil,
             queue: .main
@@ -399,7 +430,11 @@ class StatusBarController {
             NotificationCenter.default.removeObserver(systemMonitorPreferencesObserver)
         }
         nativeVisibilityApplier?.invalidateSynchronously()
-        HideMenubarIconsSwitch.shared.clearTransition(owner: menuBarTransitionOwner)
+        if configuresSystemIntegrations {
+            HideMenubarIconsSwitch.shared.clearTransition(owner: menuBarTransitionOwner)
+        } else {
+            NSStatusBar.system.removeStatusItem(mainItem)
+        }
         if let markItem {
             NSStatusBar.system.removeStatusItem(markItem)
         }
@@ -412,6 +447,36 @@ class StatusBarController {
         }
     }
     
+    /// The keyboard shortcut closes only an already-visible Screenshots section. Captures continue to use
+    /// the reveal-only client, so taking another screenshot never closes the host.
+    func toggleScreenshotsSection(defaults: UserDefaults = .standard, presentation: ScreenshotPresentationClient = .app) {
+        let tabVisible = defaults.object(forKey: UserDefaults.Key.showScreenshotsTab) as? Bool ?? true
+        guard tabVisible else { return }
+        let isOnlyControl = currentAppearance == .onlyControl
+        let action = ScreenshotShortcutAction.resolve(
+            tabVisible: tabVisible,
+            hostShown: isOnlyControl ? onlyControlWindow.isShowing : popover.isShown,
+            selectedSection: isOnlyControl ? onlyControlWindow.selectedSection : listSelectedSection
+        )
+        switch action {
+        case .none:
+            break
+        case .hide:
+            hidePopover(nil)
+        case .reveal:
+            _ = presentation.revealScreenshotsSection()
+        }
+    }
+
+    /// A new screenshot asks for the list: show the current host if it is hidden. The host consumes its
+    /// pending section request when it appears, even if it did not exist when the notification was posted.
+    func revealScreenshotsHost() {
+        guard !hasOtherPopover else { return }
+        let isShowing = currentAppearance == .onlyControl ? onlyControlWindow.isShowing : popover.isShown
+        guard !isShowing else { return }
+        showPopover(nil)
+    }
+
     func showPopover(_ sender: AnyObject?) {
         // Ensure we're on the main thread for UI operations
         guard Thread.isMainThread else {
@@ -447,7 +512,7 @@ class StatusBarController {
 
     @MainActor
     func hidePopover(_ sender: AnyObject?) {
-        if #available(macOS 26.2, *) {
+        if #available(macOS 26.2, *), configuresSystemIntegrations {
             let listAppearance = PreferencesObserver
                 .shared
                 .preferences
@@ -458,7 +523,7 @@ class StatusBarController {
             }
         }
         
-        if currentAppearance == .onlyControl || onlyControlWindow.isShowing {
+        if currentAppearance == .onlyControl || (configuresSystemIntegrations && onlyControlWindow.isShowing) {
             popover.performClose(sender)
             onlyControlWindow.hide()
         } else {
@@ -483,10 +548,11 @@ class StatusBarController {
             return
         }
 
-        let condition = currentAppearance == .onlyControl ? OnlyControlWindow.shared.isShowing : popover.isShown
-
-        if condition {
-            hidePopover(event)
+        if currentAppearance == .onlyControl {
+            guard onlyControlWindow.isShowing, !onlyControlWindow.preventsOutsideClickDismissal else { return }
+        } else {
+            guard popover.isShown, !listPreventsOutsideClickDismissal else { return }
         }
+        hidePopover(event)
     }
 }
