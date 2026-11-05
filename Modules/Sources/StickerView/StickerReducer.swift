@@ -21,7 +21,9 @@ public struct StickerReducer {
         var canTranslucent = false
         var previewMode = false
         var collaspeMode = false
-        
+        /// Changes each time the user asks to toggle a checklist; the editor applies it to the current selection.
+        var checklistToggleRequestID: UUID?
+
         public init(sticker: StickerModel) {
             self.id = sticker.id ?? UUID().uuidString
             self.stickerContent = sticker.content
@@ -43,10 +45,12 @@ public struct StickerReducer {
         case togglePreviewMode
         case toggleCollapseMode
         case addSticker
+        case toggleChecklist
         case binding(BindingAction<State>)
     }
-    
+
     @Shared(.stickerCache) var stickerCache: [StickerModel]?
+    @Dependency(\.uuid) var uuid
     
     public init() {}
 
@@ -111,7 +115,11 @@ public struct StickerReducer {
             case .addSticker:
                 $stickerCache.withLock { $0?.append(StickerModel(color: StickerColor.allCases[Int.random(in: 0..<StickerColor.allCases.count)].name)) }
                 return .none
-                
+
+            case .toggleChecklist:
+                state.checklistToggleRequestID = uuid()
+                return .none
+
             case .binding:
                 return .none
             }

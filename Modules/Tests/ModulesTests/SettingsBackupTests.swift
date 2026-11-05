@@ -75,6 +75,50 @@ struct SettingsBackupTests {
         #expect(collected[UserDefaults.Key.openAIAPI] == nil)
     }
 
+    @Test func preservesLegacySwitchVisibilityMaskInBackups() throws {
+        let legacyMask = "10"
+        let backup = SettingsBackup(
+            preferences: [UserDefaults.Key.SwitchState: legacyMask],
+            sharedPreferences: [:],
+            radioStations: [],
+            evolution: .init(preExecution: nil, commands: [])
+        )
+
+        let decoded = try SettingsBackup(data: try backup.encoded())
+
+        #expect(decoded.preferences[UserDefaults.Key.SwitchState] as? String == legacyMask)
+
+        let defaults = makeDefaults()
+        SettingsBackup.replace(
+            decoded.preferences,
+            in: defaults,
+            isAllowed: SettingsBackup.isExportablePreference
+        )
+        #expect(defaults.string(forKey: UserDefaults.Key.SwitchState) == legacyMask)
+    }
+
+    @Test func preservesExtensibleSwitchVisibilityIdentifiersInBackups() throws {
+        let identifiers = ["darkMode", "mute"]
+        let backup = SettingsBackup(
+            preferences: [UserDefaults.Key.SwitchState: identifiers],
+            sharedPreferences: [:],
+            radioStations: [],
+            evolution: .init(preExecution: nil, commands: [])
+        )
+
+        let decoded = try SettingsBackup(data: try backup.encoded())
+
+        #expect(decoded.preferences[UserDefaults.Key.SwitchState] as? [String] == identifiers)
+
+        let defaults = makeDefaults()
+        SettingsBackup.replace(
+            decoded.preferences,
+            in: defaults,
+            isAllowed: SettingsBackup.isExportablePreference
+        )
+        #expect(defaults.stringArray(forKey: UserDefaults.Key.SwitchState) == identifiers)
+    }
+
     @Test func replaceWritesValuesAndResetsMissingSettingsOnly() {
         let defaults = makeDefaults()
         defaults.set(0.9, forKey: UserDefaults.Key.nightShiftStrength)
@@ -98,12 +142,32 @@ struct SettingsBackupTests {
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.canPlayEffectSound))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.menubarIcon))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.KeepAwakeKey))
+        #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.autoStopKeepAwakeOnSleep))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.nightShiftStrength))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.SwitchState))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.orderWeight))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.shortcutsDic))
         #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.systemMonitorPreferences))
+        #expect(SettingsBackup.isExportablePreference(UserDefaults.Key.showSystemMonitorTab))
         #expect(!SettingsBackup.isExportablePreference("remoteAccess.isEnabled"))
+    }
+
+    @Test func brightnessPreferencesRoundTripWithoutLiveDisplayState() throws {
+        let keys = ["showBrightnessTabKey", "smoothBrightnessTransitionsKey",
+                    "combinedBrightnessDimmingKey", "allowZeroSoftwareBrightnessKey",
+                    "syncExternalBrightnessKey", "controlWithBrightnessKeysKey"]
+        let suite = "BrightnessBackupTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for key in keys { defaults.set(false, forKey: key) }
+        defaults.set(0.1, forKey: "brightnessLiveDisplayLevel")
+        let collected = SettingsBackup.collectPreferences(from: defaults)
+        for key in keys { #expect(collected[key] as? Bool == false) }
+        #expect(collected["brightnessLiveDisplayLevel"] == nil)
+        let backup = SettingsBackup(preferences: collected, sharedPreferences: [:],
+            radioStations: [], evolution: .init(preExecution: nil, commands: []))
+        let decoded = try SettingsBackup(data: backup.encoded())
+        for key in keys { #expect(decoded.preferences[key] as? Bool == false) }
     }
 
     @Test func rejectsGarbageAndNewerVersions() throws {

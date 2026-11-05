@@ -29,47 +29,117 @@ public struct SwitchBarInfo {
     }
 }
 
-public enum SwitchType: UInt64, CaseIterable, Sendable {
-    case hiddeDesktop = 1 //1 << 0
-    case darkMode = 2 // 1 << 1
-    case topNotch = 4 // 1 << 2
-    case mute = 8 // 1 << 3
-    case keepAwake = 16 // 1 << 4
-    case screenSaver = 32 // 1 << 5
-    case nightShift = 64 // 1 << 6
-    case autohideDock = 128 // 1 << 7
-    case autohideMenuBar = 256 // 1 << 8
-    case airPods = 512 // 1 << 9
-    case bluetooth = 1024 // 1 << 10
-    case xcodeCache = 2048 // 1 << 11
-    case hiddenFiles = 4096 // 1 << 12
-    case radioStation = 8192 // 1 << 13
-    case emptyTrash = 16_384 // 1 << 14
-    case emptyPasteboard = 32_768 // 1 << 15
-    case showUserLibrary = 65_536 // 1 << 16
-    case showExtensionName = 131_072 // 1 << 17
-    case pomodoroTimer = 262_144 // 1 << 18
-    case smallLaunchpadIcon = 524_288 // 1 << 19
-    case lowpowerMode = 1_048_576 // 1 << 20
-    case muteMicrophone = 2_097_152 // 1 << 21
-    case showFinderPathbar = 4_194_304 // 1 << 22
-    case dockRecent = 8_388_608 // 1 << 23
-    case spotify = 16_777_216 // 1 << 24
-    case applemusic = 33_554_432 // 1 << 25
-    case screenTest = 67_108_864 // 1 << 26
-    case hideMenubarIcons = 134_217_728 // 1 << 27
-    case fkey = 268_435_456 // 1 << 28
-    case backNoises = 536_870_912 // 1 << 29
-    case dimScreen = 1_073_741_824 // 1 << 30
-    case ejectDiscs = 2_147_483_648 // 1 << 31
-    case hideWindows = 4_294_967_296 // 1 << 32
-    case trueTone = 8_589_934_592 // 1 << 33
-    case topSticker = 17_179_869_184 // 1 << 34
-    case keyLight = 34_359_738_368 // 1 << 35
-    case aiCommender = 68_719_476_736 // 1 << 36
-    case authenticator = 137_438_953_472 // 1 << 37
-    case soundMixer = 274_877_906_944 // 1 << 38
-    case desktopPet = 549_755_813_888 // 1 << 39
+public enum SwitchType: String, CaseIterable, Sendable {
+    case hiddeDesktop
+    case darkMode
+    case topNotch
+    case mute
+    case keepAwake
+    case screenSaver
+    case nightShift
+    case autohideDock
+    case autohideMenuBar
+    case airPods
+    case bluetooth
+    case xcodeCache
+    case hiddenFiles
+    case radioStation
+    case emptyTrash
+    case emptyPasteboard
+    case showUserLibrary
+    case showExtensionName
+    case pomodoroTimer
+    case smallLaunchpadIcon
+    case lowpowerMode
+    case muteMicrophone
+    case showFinderPathbar
+    case dockRecent
+    case spotify
+    case applemusic
+    case screenTest
+    case hideMenubarIcons
+    case fkey
+    case backNoises
+    case dimScreen
+    case ejectDiscs
+    case hideWindows
+    case trueTone
+    case topSticker
+    case keyLight
+    case aiCommender
+    case authenticator
+    case soundMixer
+    case desktopPet
+    case codexUsage
+    case reverseScrollDirection
+    case systemMonitor
+    case aphrodite
+    case dockPreview
+    case claudeUsage
+    case xcodeCleaner
+    case appUninstaller
+    case tailscale
+
+    public var legacyIdentifier: UInt64 {
+        switch self {
+        case .hiddeDesktop: 1
+        case .darkMode: 2
+        case .topNotch: 4
+        case .mute: 8
+        case .keepAwake: 16
+        case .screenSaver: 32
+        case .nightShift: 64
+        case .autohideDock: 128
+        case .autohideMenuBar: 256
+        case .airPods: 512
+        case .bluetooth: 1_024
+        case .xcodeCache: 2_048
+        case .hiddenFiles: 4_096
+        case .radioStation: 8_192
+        case .emptyTrash: 16_384
+        case .emptyPasteboard: 32_768
+        case .showUserLibrary: 65_536
+        case .showExtensionName: 131_072
+        case .pomodoroTimer: 262_144
+        case .smallLaunchpadIcon: 524_288
+        case .lowpowerMode: 1_048_576
+        case .muteMicrophone: 2_097_152
+        case .showFinderPathbar: 4_194_304
+        case .dockRecent: 8_388_608
+        case .spotify: 16_777_216
+        case .applemusic: 33_554_432
+        case .screenTest: 67_108_864
+        case .hideMenubarIcons: 134_217_728
+        case .fkey: 268_435_456
+        case .backNoises: 536_870_912
+        case .dimScreen: 1_073_741_824
+        case .ejectDiscs: 2_147_483_648
+        case .hideWindows: 4_294_967_296
+        case .trueTone: 8_589_934_592
+        case .topSticker: 17_179_869_184
+        case .keyLight: 34_359_738_368
+        case .aiCommender: 68_719_476_736
+        case .authenticator: 137_438_953_472
+        case .soundMixer: 274_877_906_944
+        case .desktopPet: 549_755_813_888
+        case .codexUsage: 1_099_511_627_776
+        case .reverseScrollDirection: 2_199_023_255_552
+        case .systemMonitor: 4_398_046_511_104
+        case .aphrodite: 8_796_093_022_208
+        case .dockPreview: 17_592_186_044_416
+        case .claudeUsage: 35_184_372_088_832
+        case .xcodeCleaner: 70_368_744_177_664
+        case .appUninstaller: 140_737_488_355_328
+        case .tailscale: 281_474_976_710_656
+        }
+    }
+
+    public init?(legacyIdentifier: UInt64) {
+        guard let type = Self.allCases.first(where: { $0.legacyIdentifier == legacyIdentifier }) else {
+            return nil
+        }
+        self = type
+    }
 
     public func barInfo() -> SwitchBarInfo {
         switch self {
@@ -341,9 +411,87 @@ public enum SwitchType: UInt64, CaseIterable, Sendable {
                 onImage: NSImage(systemSymbolName: "pawprint"),
                 offImage: NSImage(systemSymbolName: "pawprint")
             )
+        case .dockPreview:
+            return SwitchBarInfo(
+                title: "Dock Preview",
+                onImage: NSImage(systemSymbolName: "dock.rectangle"),
+                offImage: NSImage(systemSymbolName: "dock.rectangle")
+            )
+        case .claudeUsage:
+            return SwitchBarInfo(
+                title: "Claude Usage",
+                onImage: NSImage(named: "claude_logo"),
+                offImage: NSImage(named: "claude_logo")
+            )
+        case .codexUsage:
+            return SwitchBarInfo(
+                title: "Codex Usage",
+                onImage: NSImage(named: "openai_logo"),
+                offImage: NSImage(named: "openai_logo"),
+                category: .tool
+            )
+        case .reverseScrollDirection:
+            return SwitchBarInfo(
+                title: "Natural Scrolling",
+                onImage: NSImage(systemSymbolName: "computermouse.fill"),
+                offImage: NSImage(systemSymbolName: "computermouse")
+            )
+        case .systemMonitor:
+            return SwitchBarInfo(
+                title: "System Monitor",
+                onImage: NSImage(systemSymbolName: "waveform.path.ecg"),
+                offImage: NSImage(systemSymbolName: "waveform.path.ecg"),
+                category: .tool
+            )
+        case .tailscale:
+            return SwitchBarInfo(
+                title: "Tailscale",
+                onImage: NSImage(systemSymbolName: "network"),
+                offImage: NSImage(systemSymbolName: "network"),
+                category: .tool
+            )
+        case .appUninstaller:
+            return SwitchBarInfo(
+                title: "App Uninstaller",
+                onImage: NSImage(systemSymbolName: "trash.fill"),
+                offImage: NSImage(systemSymbolName: "trash"),
+                category: .cleanup
+            )
+        case .xcodeCleaner:
+            return SwitchBarInfo(
+                title: "Xcode Cleaner",
+                onImage: NSImage(systemSymbolName: "hammer.fill"),
+                offImage: NSImage(systemSymbolName: "hammer"),
+                category: .tool
+            )
+        case .aphrodite:
+            return SwitchBarInfo(
+                title: "Aphrodite",
+                onImage: NSImage(systemSymbolName: "sparkles.rectangle.stack"),
+                offImage: NSImage(systemSymbolName: "sparkles.rectangle.stack"),
+                category: .tool
+            )
         }
     }
     
+}
+
+extension SwitchType {
+    /// Switches that only showed or hid a popover tab. Tab visibility is managed on the Tabs settings page,
+    /// so these cases stay for stored identifiers but are no longer offered as switches.
+    public static let deprecatedTabVisibilitySwitches: Set<SwitchType> = [
+        .authenticator, .soundMixer, .systemMonitor, .codexUsage,
+        .claudeUsage, .aphrodite, .xcodeCleaner, .appUninstaller,
+    ]
+
+    public var isDeprecatedTabVisibilitySwitch: Bool {
+        Self.deprecatedTabVisibilitySwitches.contains(self)
+    }
+
+    /// Built-in switches that can still be shown in the switch list, widgets and the remote catalog.
+    public static var offeredCases: [SwitchType] {
+        allCases.filter { !$0.isDeprecatedTabVisibilitySwitch }
+    }
 }
 
 public let switchTypeCount = SwitchType.allCases.count

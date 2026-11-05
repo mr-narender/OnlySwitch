@@ -58,6 +58,8 @@ enum RemoteIconAdapter {
         case .hiddeDesktop, .darkMode, .bluetooth, .showExtensionName, .dockRecent,
              .spotify, .applemusic, .hideMenubarIcons, .trueTone, .topSticker, .aiCommender:
             nil
+        // Brand logos are sent as template PNGs so the remote shows the same icon as the Mac.
+        case .claudeUsage, .codexUsage: nil
         case .topNotch: nil
         case .mute: "speaker.wave.2.circle"
         case .keepAwake: "lock.slash"
@@ -87,6 +89,13 @@ enum RemoteIconAdapter {
         case .authenticator: "key"
         case .soundMixer: "slider.horizontal.3"
         case .desktopPet: "pawprint"
+        case .dockPreview: "dock.rectangle"
+        case .reverseScrollDirection: "computermouse"
+        case .systemMonitor: "waveform.path.ecg"
+        case .xcodeCleaner: "hammer.fill"
+        case .tailscale: "network"
+        case .appUninstaller: "trash.fill"
+        case .aphrodite: "sparkles.rectangle.stack"
         }
     }
 }

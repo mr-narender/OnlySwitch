@@ -1,17 +1,51 @@
 import SwiftUI
+import ComposableArchitecture
 
 struct DesktopPetRootView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let presentation: DesktopPetPresentation
     let onDragChanged: @MainActor (DragGesture.Value) -> Void
     let onDragEnded: @MainActor (DragGesture.Value) -> Void
+    let playbackStore: StoreOf<DesktopPetPlaybackFeature>
+    let onPlaybackVisibilityChanged: @MainActor (Bool) -> Void
     let onClose: @MainActor () -> Void
 
     var body: some View {
+        VStack(spacing: 0) {
+            if playbackStore.source != nil {
+                DesktopPetNowPlayingLabel(nowPlaying: playbackStore.nowPlaying)
+                    .frame(height: DesktopPetMetrics.nowPlayingLaneHeight, alignment: .top)
+                DesktopPetPlaybackControls(
+                    isPlaying: playbackStore.isPlaying,
+                    onPlayPause: { playbackStore.send(.playPauseTapped) },
+                    onNext: { playbackStore.send(.nextTapped) }
+                )
+                .padding(.top, 2)
+                .frame(
+                    height: DesktopPetMetrics.playbackLaneHeight(for: presentation.pomodoroState),
+                    alignment: .top
+                )
+            }
+            pet
+        }
+        .onChange(of: playbackStore.source != nil, initial: true) { _, isShown in
+            onPlaybackVisibilityChanged(isShown)
+        }
+    }
+
+    private var pet: some View {
         DesktopPetView(
             isActive: presentation.isActive,
             isDragging: presentation.isDragging,
             isControlPresented: presentation.isControlPresented,
-            pomodoroState: presentation.pomodoroState
+            pomodoroState: presentation.pomodoroState,
+            isMusicPlaying: playbackStore.isPlaying
+        )
+        .rotationEffect(.degrees(presentation.edgeTilt))
+        .animation(
+            reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 0.4),
+            value: presentation.edgeTilt
         )
         .contentShape(
             .interaction,
@@ -28,4 +62,5 @@ struct DesktopPetRootView: View {
             Button("Close", role: .destructive, action: onClose)
         }
     }
+
 }
