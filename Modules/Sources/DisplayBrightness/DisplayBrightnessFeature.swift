@@ -18,6 +18,12 @@ public struct DisplayBrightnessFeature {
         public var isSavingSettings = false
         public var settingsSaveFailed = false
         public init() {}
+
+        /// The one-click sync needs a built-in source and at least one external display it can change.
+        public var canSyncFromBuiltIn: Bool {
+            snapshot.displays.contains(where: \.isBuiltIn)
+                && snapshot.displays.contains { !$0.isBuiltIn && $0.control != .unavailable }
+        }
     }
 
     public enum Action: Sendable {
@@ -29,6 +35,8 @@ public struct DisplayBrightnessFeature {
         case snapshotReceived(BrightnessSnapshot)
         case settingsLoaded(BrightnessSettings, revision: UInt64)
         case levelChanged(screenID: UInt32, level: Double)
+        case percentSubmitted(screenID: UInt32, text: String)
+        case syncFromBuiltInTapped
         case applyCompleted(screenID: UInt32, generation: UInt64, revision: UInt64, level: Double)
         case applyFailed(screenID: UInt32, generation: UInt64, revision: UInt64)
         case settingsChanged(BrightnessSettings)
@@ -116,25 +124,16 @@ public struct DisplayBrightnessFeature {
                 return .none
 
             case let .levelChanged(screenID, level):
-                guard level.isFinite,
-                      let index = state.snapshot.displays.firstIndex(where: { $0.id == screenID }),
-                      state.snapshot.displays[index].control != .unavailable else { return .none }
-                let level = min(1, max(0, level))
-                let revision = (state.revisions[screenID] ?? 0) &+ 1
-                let generation = state.snapshot.generation
-                state.revisions[screenID] = revision
-                state.pending[screenID] = revision
-                state.snapshot.displays[index].level = level
-                state.snapshot.displays[index].error = false
-                let request = BrightnessRequest(screenID: screenID, generation: generation, level: level, revision: revision)
-                return .run { [client] send in
-                    do {
-                        try await client.apply(request)
-                        try Task.checkCancellation()
-                        await send(.applyCompleted(screenID: screenID, generation: generation, revision: revision, level: level))
-                    } catch is CancellationError { }
-                    catch { await send(.applyFailed(screenID: screenID, generation: generation, revision: revision)) }
-                }.cancellable(id: ApplyID(screenID: screenID), cancelInFlight: true)
+                return setLevel(level, screenID: screenID, state: &state)
+
+            case let .percentSubmitted(screenID, text):
+                guard let level = BrightnessPercentInput.level(from: text) else { return .none }
+                return setLevel(level, screenID: screenID, state: &state)
+
+            case .syncFromBuiltInTapped:
+                guard let source = state.snapshot.displays.first(where: \.isBuiltIn) else { return .none }
+                let targets = state.snapshot.displays.filter { !$0.isBuiltIn && $0.control != .unavailable }.map(\.id)
+                return .merge(targets.map { setLevel(source.level, screenID: $0, state: &state) })
 
             case let .applyCompleted(screenID, generation, revision, level):
                 guard generation == state.snapshot.generation, state.pending[screenID] == revision,
@@ -183,6 +182,28 @@ public struct DisplayBrightnessFeature {
                 }
             }
         }
+    }
+
+    private func setLevel(_ level: Double, screenID: UInt32, state: inout State) -> Effect<Action> {
+        guard level.isFinite,
+              let index = state.snapshot.displays.firstIndex(where: { $0.id == screenID }),
+              state.snapshot.displays[index].control != .unavailable else { return .none }
+        let level = min(1, max(0, level))
+        let revision = (state.revisions[screenID] ?? 0) &+ 1
+        let generation = state.snapshot.generation
+        state.revisions[screenID] = revision
+        state.pending[screenID] = revision
+        state.snapshot.displays[index].level = level
+        state.snapshot.displays[index].error = false
+        let request = BrightnessRequest(screenID: screenID, generation: generation, level: level, revision: revision)
+        return .run { [client] send in
+            do {
+                try await client.apply(request)
+                try Task.checkCancellation()
+                await send(.applyCompleted(screenID: screenID, generation: generation, revision: revision, level: level))
+            } catch is CancellationError { }
+            catch { await send(.applyFailed(screenID: screenID, generation: generation, revision: revision)) }
+        }.cancellable(id: ApplyID(screenID: screenID), cancelInFlight: true)
     }
 
     private func accept(_ snapshot: BrightnessSnapshot, state: inout State) -> Effect<Action> {

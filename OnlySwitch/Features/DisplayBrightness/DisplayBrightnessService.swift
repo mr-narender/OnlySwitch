@@ -129,17 +129,19 @@ final class DisplayBrightnessService {
                 } else { control = .software; level = shades.factor(for: id) }
             }
             let preserved = shades.factor(for: id) < 1 ? previous.first(where: { $0.id == id && $0.control == control })?.level : nil
-            displays.append(.init(id: id, name: screen.localizedName, control: control, level: preserved ?? level))
+            displays.append(.init(id: id, name: screen.localizedName, control: control, level: preserved ?? level,
+                                  isBuiltIn: CGDisplayIsBuiltin(id) != 0))
         }
         coordinator.replaceInventory(displays)
         return presentedSnapshot(coordinator.snapshot)
     }
 
-    func apply(_ request: BrightnessRequest) async throws {
+    /// Dim Screen passes `isManual: false` so its own writes do not cancel dimming.
+    func apply(_ request: BrightnessRequest, isManual: Bool = true) async throws {
         guard !isSleeping else { throw BrightnessError.unavailable }
         keyboardTasks.removeValue(forKey: request.screenID)?.cancel()
         keyboardAccumulator.cancel(screenID: request.screenID)
-        if coordinator.snapshot.displays.first(where: { $0.id == request.screenID })?.control == .native {
+        if isManual, coordinator.snapshot.displays.first(where: { $0.id == request.screenID })?.control == .native {
             NotificationCenter.default.post(name: .init("OnlySwitchManualNativeBrightness"), object: NSNumber(value: request.screenID))
         }
         try await coordinator.apply(request)

@@ -53,6 +53,12 @@ public struct DisplayBrightnessView: View {
             ForEach(store.snapshot.displays) { display in
                 row(display)
             }
+            if store.canSyncFromBuiltIn {
+                Button("Match external displays to built-in".localized(), systemImage: "arrow.triangle.2.circlepath") {
+                    store.send(.syncFromBuiltInTapped)
+                }
+                .help("Set every external display to the built-in display's brightness".localized())
+            }
             Button("Reset software dimming".localized()) { store.send(.resetSoftwareDimming) }
                 .buttonStyle(.link)
         }
@@ -70,8 +76,10 @@ public struct DisplayBrightnessView: View {
                     Text(controlTitle(display.control).localized()).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Text(display.level, format: .percent.precision(.fractionLength(0)))
-                    .font(.body.monospacedDigit()).foregroundStyle(.secondary)
+                BrightnessPercentField(level: display.level, isEnabled: display.control != .unavailable,
+                                       displayName: display.name) { text in
+                    store.send(.percentSubmitted(screenID: display.id, text: text))
+                }
             }
             Slider(value: Binding(
                 get: { store.snapshot.displays.first(where: { $0.id == display.id })?.level ?? display.level },

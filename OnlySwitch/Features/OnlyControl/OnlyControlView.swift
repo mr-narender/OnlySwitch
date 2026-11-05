@@ -22,6 +22,7 @@ import XcodeCleaner
 import AppUninstaller
 import Screenshots
 import DisplayBrightness
+import Scheduler
 import Utilities
 
 struct OnlyControlView: View {
@@ -43,6 +44,7 @@ struct OnlyControlView: View {
     @AppStorage(UserDefaults.Key.showAppUninstallerTab) private var showAppUninstallerTab = true
     @AppStorage(UserDefaults.Key.showScreenshotsTab) private var showScreenshotsTab = true
     @AppStorage(UserDefaults.Key.showBrightnessTab) private var showBrightnessTab = true
+    @AppStorage(UserDefaults.Key.showSchedulesTab) private var showSchedulesTab = true
     
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
@@ -147,6 +149,15 @@ struct OnlyControlView: View {
             case .screenshots:
                 ScreenshotsView(store: SettingsVM.shared.screenshotsStore)
                     .id(languageManager.currentLang)
+            case .schedules:
+                SchedulesPanelView(store: SettingsVM.shared.schedulesStore, compact: false) {
+                    SettingsVM.shared.selection = .Schedules
+                    SettingsWindow.shared.show()
+                }
+                .padding(.horizontal, 30)
+                .padding(.vertical, 12)
+                .environment(\.locale, Locale(identifier: languageManager.currentLang))
+                .id(languageManager.currentLang)
             case .aphrodite:
                 aphroditePage
         }
@@ -280,7 +291,8 @@ struct OnlyControlView: View {
             xcodeCleaner: showXcodeCleanerTab,
             appUninstaller: showAppUninstallerTab,
             screenshots: showScreenshotsTab,
-            brightness: showBrightnessTab
+            brightness: showBrightnessTab,
+            schedules: showSchedulesTab
         )
     }
 }

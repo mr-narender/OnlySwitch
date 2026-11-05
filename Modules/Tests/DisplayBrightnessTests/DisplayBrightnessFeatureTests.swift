@@ -33,6 +33,66 @@ struct DisplayBrightnessFeatureTests {
         await store.send(.levelChanged(screenID: 99, level: 0.2))
     }
 
+    @Test func typedPercentAppliesTheClampedLevel() async {
+        let writes = LockIsolated<[BrightnessRequest]>([])
+        let store = TestStore(initialState: populatedState()) { DisplayBrightnessFeature() } withDependencies: {
+            $0.displayBrightnessClient.apply = { request in writes.withValue { $0.append(request) } }
+        }
+        await store.send(.percentSubmitted(screenID: 1, text: "150")) {
+            $0.snapshot.displays[0].level = 1
+            $0.revisions[1] = 1
+            $0.pending[1] = 1
+        }
+        await store.receive(\.applyCompleted) {
+            $0.snapshot.displays[0].appliedLevel = 1
+            $0.pending[1] = nil
+        }
+        #expect(writes.value == [.init(screenID: 1, generation: 3, level: 1, revision: 1)])
+    }
+
+    @Test func invalidOrUnavailableTypedPercentIsIgnored() async {
+        var initial = populatedState()
+        initial.snapshot.displays[1].control = .unavailable
+        let store = TestStore(initialState: initial) { DisplayBrightnessFeature() }
+        await store.send(.percentSubmitted(screenID: 1, text: "abc"))
+        await store.send(.percentSubmitted(screenID: 1, text: ""))
+        await store.send(.percentSubmitted(screenID: 2, text: "50"))
+        await store.send(.percentSubmitted(screenID: 99, text: "50"))
+    }
+
+    @Test func syncAppliesBuiltInLevelToEveryControllableExternal() async {
+        let writes = LockIsolated<[BrightnessRequest]>([])
+        var initial = populatedState()
+        initial.snapshot.displays[0].isBuiltIn = true
+        initial.snapshot.displays[0].level = 0.6
+        initial.snapshot.displays.append(.init(id: 3, name: "Projector", control: .unavailable, level: 1))
+        initial.snapshot.displays.append(.init(id: 4, name: "TV", control: .software, level: 1))
+        #expect(initial.canSyncFromBuiltIn)
+        let store = TestStore(initialState: initial) { DisplayBrightnessFeature() } withDependencies: {
+            $0.displayBrightnessClient.apply = { request in writes.withValue { $0.append(request) } }
+        }
+        store.exhaustivity = .off
+        await store.send(.syncFromBuiltInTapped) {
+            $0.snapshot.displays[1].level = 0.6
+            $0.snapshot.displays[3].level = 0.6
+        }
+        await store.skipReceivedActions()
+        #expect(Set(writes.value.map(\.screenID)) == [2, 4])
+        #expect(writes.value.allSatisfy { $0.level == 0.6 })
+        #expect(store.state.snapshot.displays[0].level == 0.6)
+        #expect(store.state.snapshot.displays[2].level == 1)
+    }
+
+    @Test func syncNeedsABuiltInAndAControllableExternal() async {
+        var noBuiltIn = populatedState()
+        #expect(!noBuiltIn.canSyncFromBuiltIn)
+        noBuiltIn.snapshot.displays[0].isBuiltIn = true
+        noBuiltIn.snapshot.displays[1].control = .unavailable
+        #expect(!noBuiltIn.canSyncFromBuiltIn)
+        let store = TestStore(initialState: populatedState()) { DisplayBrightnessFeature() }
+        await store.send(.syncFromBuiltInTapped)
+    }
+
     @Test func failedWriteKeepsLastAppliedValueAndShowsFailure() async {
         let store = TestStore(initialState: populatedState()) { DisplayBrightnessFeature() } withDependencies: {
             $0.displayBrightnessClient.apply = { _ in throw BrightnessError.writeFailed }
