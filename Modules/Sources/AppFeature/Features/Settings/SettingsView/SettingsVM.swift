@@ -136,10 +136,13 @@ class SettingsVM: ObservableObject {
     var evolutionStore = Store(
         initialState: EvolutionReducer.State()) {
             EvolutionReducer()
-                ._printChanges()
         } withDependencies: {
             $0.evolutionListService = .liveValue
         }
+
+    lazy var shortcutsStore = Store(initialState: ShortcutsSettingsReducer.State()) {
+        ShortcutsSettingsReducer()
+    }
 
     var keyLightStore = Store(
         initialState: KeyLightFeature.State()) {
