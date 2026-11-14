@@ -1,0 +1,154 @@
+//
+//  DimScreenSwitch.swift
+//  OnlySwitch
+//
+//  Created by Jacklandrin on 2022/8/13.
+//
+
+import Foundation
+import Combine
+import Defines
+import Switches
+import DisplayBrightness
+
+final class DimScreenSwitch: SwitchProvider, @unchecked Sendable {
+    enum DimScreenError:Error {
+        case brightnessTooLow
+    }
+
+    var type: SwitchType = .dimScreen
+
+    var delegate: SwitchDelegate?
+
+    private var isDimming:Bool = false {
+        didSet {
+            timerCounter = 0
+        }
+    }
+    /// Brightness of every dimmed display before dimming, keyed by display ID.
+    private var originalLevels: [UInt32: Double] = [:]
+    private var dimPercent:Float = Preferences.shared.dimScreenPercent
+    private var autoDimScreenTime = Preferences.shared.autoDimScreenTime
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private var timerCounter = 0
+    private var cancellable = Set<AnyCancellable>()
+
+    private var durationBySecond:Int {
+        autoDimScreenTime * 60 //persistance unit is min, here is second
+    }
+
+    init() {
+        NotificationCenter.default.addObserver(forName: .changeDimScreenSetting, object: nil, queue: .main) { [weak self] _ in
+            guard let strongSelf = self else {return}
+            if strongSelf.dimPercent != Preferences.shared.dimScreenPercent {
+                strongSelf.dimPercent = Preferences.shared.dimScreenPercent
+                if strongSelf.isDimming {
+                    Task { @MainActor in await strongSelf.applyDimPercent() }
+                }
+            }
+            strongSelf.autoDimScreenTime = Preferences.shared.autoDimScreenTime
+        }
+
+        NotificationCenter.default.publisher(for: .init("OnlySwitchManualNativeBrightness"))
+            .receive(on: RunLoop.main)
+            .sink { [weak self] note in
+                guard let self, let id = note.object as? NSNumber else { return }
+                // A manually adjusted display keeps its new brightness; dimming ends once none are left.
+                guard self.originalLevels.removeValue(forKey: id.uint32Value) != nil,
+                      self.originalLevels.isEmpty else { return }
+                self.isDimming = false
+                NotificationCenter.default.post(name: .refreshSingleSwitchStatus, object: self.type)
+            }.store(in: &cancellable)
+        setTimer()
+    }
+
+    deinit {
+        cancellable.removeAll()
+    }
+
+    @MainActor
+    func currentStatus() async -> Bool {
+        return isDimming
+    }
+
+    @MainActor
+    func currentInfo() async -> String {
+        return ""
+    }
+
+    @MainActor
+    func operateSwitch(isOn: Bool) async throws {
+        if isOn {
+            try await dimScreen()
+        } else {
+            await restoreScreen()
+        }
+    }
+
+    func isVisible() -> Bool {
+        return true
+    }
+
+    private func setTimer() {
+        timer.sink{ _ in
+            guard !self.isDimming, self.autoDimScreenTime != 0 else {return} //switch is on and duration isn't never
+            self.timerCounter += 1
+            if self.timerCounter == self.durationBySecond {
+                self.timerCounter = 0
+                Task { @MainActor in
+                    try? await self.dimScreen()
+                    NotificationCenter.default.post(name: .refreshSingleSwitchStatus, object: self.type)
+                }
+            }
+        }.store(in: &cancellable)
+    }
+
+    @MainActor
+    private func dimScreen() async throws {
+        guard !isDimming else { return }
+        let snapshot = await DisplayBrightnessService.shared.scan()
+        guard !isDimming else { return } // another dim request finished while scanning
+        let levels = snapshot.displays.filter { $0.control != .unavailable }.map { ($0.id, $0.level) }
+        let originals = Dictionary(levels, uniquingKeysWith: { first, _ in first })
+        let targets = BrightnessDimPolicy.targets(originals: originals, percent: Double(dimPercent))
+        guard !targets.isEmpty else {
+            throw DimScreenError.brightnessTooLow
+        }
+        originalLevels = originals.filter { targets[$0.key] != nil }
+        isDimming = true
+        await applyDimPercent(generation: snapshot.generation)
+    }
+
+    @MainActor
+    private func applyDimPercent(generation: UInt64? = nil) async {
+        var currentGeneration = generation
+        if currentGeneration == nil {
+            currentGeneration = await DisplayBrightnessService.shared.scan().generation
+        }
+        guard let generation = currentGeneration else { return }
+        let targets = BrightnessDimPolicy.targets(originals: originalLevels, percent: Double(dimPercent))
+        await apply(targets, generation: generation)
+    }
+
+    @MainActor
+    private func restoreScreen() async {
+        guard isDimming else { return }
+        isDimming = false
+        let originals = originalLevels
+        originalLevels = [:]
+        let generation = await DisplayBrightnessService.shared.scan().generation
+        await apply(originals, generation: generation)
+    }
+
+    /// Displays transition in parallel; one failing display must not keep the others from changing.
+    @MainActor
+    private func apply(_ levels: [UInt32: Double], generation: UInt64) async {
+        let tasks = levels.map { id, level in
+            Task { @MainActor in
+                try? await DisplayBrightnessService.shared.apply(
+                    .init(screenID: id, generation: generation, level: level, revision: 0), isManual: false)
+            }
+        }
+        for task in tasks { await task.value }
+    }
+}

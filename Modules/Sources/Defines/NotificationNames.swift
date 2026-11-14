@@ -16,6 +16,7 @@ public extension Notification.Name {
     static let shouldHidePopover = Notification.Name("shouldHidePopover")
     static let changeMenuBarIcon = Notification.Name("changeMenuBarIcon")
     static let desktopPetVisibilityChanged = Notification.Name("desktopPetVisibilityChanged")
+    static let dockPreviewVisibilityChanged = Notification.Name("dockPreviewVisibilityChanged")
     static let volumeChange = Notification.Name("volumeChange")
     static let soundWaveToggle = Notification.Name("soundWaveToggleNotification")
     static let changeSettings = Notification.Name("changeSettingNotification")
@@ -29,8 +30,11 @@ public extension Notification.Name {
     static let changeAutoStopNoiseTime = Notification.Name(rawValue: "changeAutoStopNoiseTime")
     static let changeKeepAwakeSetting = Notification.Name(rawValue: "changeKeepAwakeSetting")
     static let changeDimScreenSetting = Notification.Name(rawValue: "changeDimScreenSetting")
+    static let builtInDisplayBrightnessDidChange = Notification.Name("builtInDisplayBrightnessDidChange")
     static let changeSyncExternalBrightnessSetting = Notification.Name(rawValue: "changeSyncExternalBrightnessSetting")
     static let changeNightShiftSetting = Notification.Name(rawValue: "changeNightShiftSetting")
     static let systemMonitorPreferencesChanged = Notification.Name(rawValue: "systemMonitorPreferencesChanged")
     static let toggleSplitSettingsWindow = Notification.Name(rawValue: "toggleSplitSettingsWindow")
+    /// A new screenshot arrived: show a list host and select the Screenshots section.
+    static let revealScreenshotsSection = Notification.Name(rawValue: "revealScreenshotsSection")
 }

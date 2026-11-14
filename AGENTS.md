@@ -25,7 +25,7 @@ Skills are opt-in by task context. First inspect the task and repository; then l
 | `swiftui-pro` (`doc/skills/swiftui-pro/SKILL.md`) | Reviewing, designing, or implementing SwiftUI views, view state, navigation, accessibility, animations, or SwiftUI performance | The task does not inspect or change SwiftUI code |
 | `swift-concurrency-pro` (`doc/skills/swift-concurrency-pro/SKILL.md`) | Reviewing, designing, or implementing Swift concurrency, actors, `Sendable`, isolation, async streams, cancellation, or strict-concurrency fixes | The task does not inspect or change concurrency code |
 | `swift-testing-pro` (`doc/skills/swift-testing-pro/SKILL.md`) | Writing, migrating, reviewing, or improving Swift Testing/XCTest code or test strategy | No test code or test strategy is in scope |
-| `app-store-review` (`doc/skills/app-store-review/SKILL.md`) | Reviewing macOS app code for App Store Review Guidelines, submission readiness, safety, privacy, legal, design, business, or performance risks | The task is not related to App Store compliance or release readiness |
+| `app-store-review` (`doc/skills/app-store-review/SKILL.md`) | The user explicitly requests an App Store submission-readiness review | Any macOS app task; App Store constraints are out of scope by default for this project |
 | `writing-plans` (`doc/skills/writing-plans/SKILL.md`) | The user requests a multi-step implementation plan, or the workflow's plan step is accepted | The user declines a plan or the task is small and self-contained |
 
 Use the narrowest applicable skill. If several conditions match, load the smallest set that covers the work and state the selection in the task update. Skill instructions may route to more specific references; follow only those references needed for the current task. For the project-local `writing-plans` skill, always save plans as `doc/plan/YYYY-MM-DD-<feature-name>.md`; this project location overrides any generic default path in the skill.
@@ -36,8 +36,13 @@ Use the narrowest applicable skill. If several conditions match, load the smalle
 - Keep implementation plans in `doc/plan/`. Keep reusable skill notes, routing supplements, and project-specific skill instructions in `doc/skills/`.
 - Keep business logic out of SwiftUI views. Move state transitions, validation, orchestration, and side effects into TCA reducers, domain types, or injected clients.
 - Preserve the boundaries between the macOS app, widget extension, remote app, and reusable Swift Package modules.
+- Keep Xcode targets thin: all code goes into `Modules` package modules; targets hold only entry points, resources, Info.plist, and entitlements. Run `Scripts/check-thin-targets.sh` after structural changes.
 - Prefer focused, composable modules and reusable abstractions over expanding monolithic files.
+- Do not let any Swift source file exceed 500 lines. When a change would push a file past the limit, split it into focused types, extensions, or files first. Unit test files are exempt.
 - Maintain Swift 6 concurrency safety, including explicit sendability and actor isolation at networking, persistence, and process-boundary crossings.
+- Do not use `print`, `debugPrint`, `dump`, or `NSLog` in production code. Log only through OSLog `Logger`: use the shared categories in `Modules/Sources/Extensions/Logger++.swift` (add a new category there when none fits), or a file-private `Logger` in modules that do not depend on `Extensions`. Choose the matching level (`.debug`, `.info`, `.warning`, `.error`, `.fault`) and keep sensitive values at the default private redaction. Test targets and standalone scripts are exempt.
 - Treat shell commands, Apple Events, keychain access, system settings, and user permissions as security-sensitive effects that require explicit dependencies and testable failure handling.
+- Do not evaluate macOS app changes against App Store constraints unless the user explicitly requests an App Store submission-readiness review.
+- Design new or substantially changed UI with modern platform styling, adopting Liquid Glass where supported, providing compatible fallbacks, supporting light and dark modes, and adapting layouts for macOS, iPhone, and iPad sizes as applicable.
+- Translate every new user-facing string into every language supported by OnlySwitch; do not ship newly added source-only strings.
 - Avoid unrelated formatting or refactoring. Update documentation when a change alters an architectural decision or workflow.
-

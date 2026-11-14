@@ -37,6 +37,29 @@ public enum SystemMonitorMetric: String, CaseIterable, Codable, Hashable, Sendab
     }
 }
 
+public struct SystemMonitorProcessIdentity: Codable, Equatable, Sendable {
+    public let pid: Int32
+    public let startTimeMicroseconds: UInt64
+
+    public init(pid: Int32, startTimeMicroseconds: UInt64) {
+        self.pid = pid
+        self.startTimeMicroseconds = startTimeMicroseconds
+    }
+}
+
+public struct SystemMonitorProcessActivationTarget: Codable, Equatable, Sendable {
+    public let sampledProcess: SystemMonitorProcessIdentity
+    public let owningApplication: SystemMonitorProcessIdentity
+
+    public init(
+        sampledProcess: SystemMonitorProcessIdentity,
+        owningApplication: SystemMonitorProcessIdentity
+    ) {
+        self.sampledProcess = sampledProcess
+        self.owningApplication = owningApplication
+    }
+}
+
 public struct SystemMonitorProcess: Codable, Equatable, Identifiable, Sendable {
     public let pid: Int32
     public let name: String
@@ -44,6 +67,7 @@ public struct SystemMonitorProcess: Codable, Equatable, Identifiable, Sendable {
     public let memoryBytes: MetricAvailability<UInt64>
     public let downloadBytesPerSecond: MetricAvailability<Double>
     public let uploadBytesPerSecond: MetricAvailability<Double>
+    public let activationTarget: SystemMonitorProcessActivationTarget?
 
     public var id: Int32 { pid }
 
@@ -53,7 +77,8 @@ public struct SystemMonitorProcess: Codable, Equatable, Identifiable, Sendable {
         cpuUsage: MetricAvailability<Double> = .unavailable,
         memoryBytes: MetricAvailability<UInt64> = .unavailable,
         downloadBytesPerSecond: MetricAvailability<Double> = .unavailable,
-        uploadBytesPerSecond: MetricAvailability<Double> = .unavailable
+        uploadBytesPerSecond: MetricAvailability<Double> = .unavailable,
+        activationTarget: SystemMonitorProcessActivationTarget? = nil
     ) {
         self.pid = pid
         self.name = name
@@ -61,6 +86,7 @@ public struct SystemMonitorProcess: Codable, Equatable, Identifiable, Sendable {
         self.memoryBytes = memoryBytes
         self.downloadBytesPerSecond = downloadBytesPerSecond
         self.uploadBytesPerSecond = uploadBytesPerSecond
+        self.activationTarget = activationTarget
     }
 }
 
@@ -290,15 +316,32 @@ public struct SystemMonitorPreferences: Codable, Equatable, Sendable {
     public var enabledPanelMetrics: Set<SystemMonitorMetric>
     public var menuBarMetrics: Set<SystemMonitorMetric>
     public var refreshInterval: TimeInterval
+    public var isCompactMode: Bool
 
     public init(
         enabledPanelMetrics: Set<SystemMonitorMetric> = Set(SystemMonitorMetric.allCases),
         menuBarMetrics: Set<SystemMonitorMetric> = [],
-        refreshInterval: TimeInterval = 1
+        refreshInterval: TimeInterval = 1,
+        isCompactMode: Bool = false
     ) {
         self.enabledPanelMetrics = enabledPanelMetrics
         self.menuBarMetrics = menuBarMetrics
         self.refreshInterval = max(refreshInterval, 1)
+        self.isCompactMode = isCompactMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case enabledPanelMetrics, menuBarMetrics, refreshInterval, isCompactMode
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            enabledPanelMetrics: try container.decode(Set<SystemMonitorMetric>.self, forKey: .enabledPanelMetrics),
+            menuBarMetrics: try container.decode(Set<SystemMonitorMetric>.self, forKey: .menuBarMetrics),
+            refreshInterval: try container.decode(TimeInterval.self, forKey: .refreshInterval),
+            isCompactMode: try container.decodeIfPresent(Bool.self, forKey: .isCompactMode) ?? false
+        )
     }
 
     public var requiresBackgroundSampling: Bool { menuBarMetrics.isEmpty == false }

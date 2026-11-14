@@ -1,0 +1,134 @@
+//
+//  SpotifyPlayer.swift
+//  OnlySwitch
+//
+//  Created by Jacklandrin on 2022/2/19.
+//
+
+import Foundation
+import ScriptingBridge
+
+let spotifyStateChangedNotification = NSNotification.Name("com.spotify.client.PlaybackStateChanged")
+
+class SpotifyPlayer{
+    var spotifyApp: SpotifyApplication
+    var isRunning:Bool {
+        spotifyApp.isRunning ?? false
+    }
+    weak var delegate:MusicPlayerDelegate?
+    /// Track from the last playback notification, readable without Automation permission.
+    private(set) var notifiedTrack: (name: String?, artist: String?)?
+    
+    required init?(){
+        guard let player = SBApplication(bundleIdentifier: "com.spotify.client") else {return nil}
+        spotifyApp = player
+        observePlayerInfoNotification()
+    }
+    
+    deinit {
+        removePlayerInfoNotification()
+    }
+    
+    func removePlayerInfoNotification() {
+        DistributedNotificationCenter.default().removeObserver(self)
+    }
+    
+    /// AppKit suspends distributed notifications while the app is inactive, which a menu bar app
+    /// almost always is, so deliver immediately to keep the cached state current.
+    func observePlayerInfoNotification() {
+        DistributedNotificationCenter.default().addObserver(
+            self,
+            selector: #selector(playerInfoChanged(_:)),
+            name: spotifyStateChangedNotification,
+            object: nil,
+            suspensionBehavior: .deliverImmediately
+        )
+    }
+    
+    @objc func playerInfoChanged(_ notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let playerState = userInfo["Player State"] as? String
+        else { return }
+        notifiedTrack = playerState == "Stopped"
+            ? nil
+            : (userInfo["Name"] as? String, userInfo["Artist"] as? String)
+        
+        switch playerState {
+        case "Paused":
+            pauseEvent()
+        case "Stopped":
+            stoppedEvent()
+        case "Playing":
+            playingEvent()
+        default:
+            break
+        }
+    }
+
+}
+
+extension SpotifyPlayer:MusicPlayer {
+    var playbackState: MusicPlaybackState {
+        // A player that quits mid-request replies with no state, which is not a valid case
+        // and would trap when switched on, so validate it through its raw value first.
+        guard isRunning,
+              let rawState = spotifyApp.playerState?.rawValue,
+              let playerState = SpotifyEPlS(rawValue: rawState)
+        else { return .stopped }
+        return MusicPlaybackState(playerState)
+    }
+    
+    var originalPlayer: SBApplication {
+        return self.spotifyApp as! SBApplication
+    }
+    
+    func play() -> Bool {
+        guard isRunning,
+              let trackName = spotifyApp.currentTrack?.name,
+              !trackName.isEmpty
+        else { return false }
+        spotifyApp.play?()
+        return true
+    }
+    
+    @MainActor
+    func nextTrack() {
+        // Paused players can skip too, and the playing state can lag behind a background player.
+        guard isRunning else { return }
+        spotifyApp.nextTrack?()
+    }
+
+    func pause() -> Bool {
+        guard isRunning else { return false}
+        spotifyApp.pause?()
+        return true
+    }
+    
+    func pauseEvent() {
+        delegate?.player(self, playbackStateChanged: .paused)
+    }
+    
+    func stoppedEvent() {
+        delegate?.playerDidQuit(self)
+    }
+    
+    func playingEvent() {
+        delegate?.player(self, playbackStateChanged: .playing)
+    }
+}
+
+// MARK: - Enum Extension
+
+fileprivate extension MusicPlaybackState {
+    
+    init(_ playbackState: SpotifyEPlS) {
+        switch playbackState {
+        case .stopped:
+            self = .stopped
+        case .playing:
+            self = .playing
+        case .paused:
+            self = .paused
+        }
+    }
+}
