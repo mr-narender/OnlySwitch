@@ -10,6 +10,9 @@ struct MotionValues: Equatable {
     let badgeGlowOpacity: Double
     let musicPulse: Double
     let musicCounterPulse: Double
+    let chomp: Double
+    let heartRise: Double
+    let reactionProgress: Double
 
     init(
         verticalOffset: Double,
@@ -20,7 +23,10 @@ struct MotionValues: Equatable {
         badgeScale: Double = 1,
         badgeGlowOpacity: Double = 0,
         musicPulse: Double = 0.5,
-        musicCounterPulse: Double = 0.5
+        musicCounterPulse: Double = 0.5,
+        chomp: Double = 0,
+        heartRise: Double = 0,
+        reactionProgress: Double = 0
     ) {
         self.verticalOffset = verticalOffset
         self.horizontalOffset = horizontalOffset
@@ -31,6 +37,9 @@ struct MotionValues: Equatable {
         self.badgeGlowOpacity = badgeGlowOpacity
         self.musicPulse = musicPulse
         self.musicCounterPulse = musicCounterPulse
+        self.chomp = chomp
+        self.heartRise = heartRise
+        self.reactionProgress = reactionProgress
     }
 
     static let still = MotionValues(
@@ -51,7 +60,11 @@ enum DesktopPetMotion {
         isActive: Bool,
         isDragging: Bool,
         reduceMotion: Bool,
-        isMusicPlaying: Bool = false
+        isMusicPlaying: Bool = false,
+        isAgentWorking: Bool = false,
+        isHungry: Bool = false,
+        reaction: DesktopPetReaction? = nil,
+        reactionStartedAt: Date? = nil
     ) -> MotionValues {
         guard isActive, !isDragging, !reduceMotion else { return .still }
 
@@ -96,7 +109,31 @@ enum DesktopPetMotion {
             )
         }
 
-        guard isMusicPlaying else { return baseline }
+        if let reaction {
+            return reactionValues(
+                reaction, seconds: seconds, startedAt: reactionStartedAt ?? date,
+                now: date, baseline: baseline
+            )
+        }
+
+        if isAgentWorking {
+            let typing = sin(seconds * .pi * 2 / 0.55)
+            return MotionValues(
+                verticalOffset: -abs(typing) * 1.5,
+                horizontalOffset: typing * 1.5,
+                rotationDegrees: typing * 1.8,
+                eyeScale: baseline.eyeScale,
+                sliderOffset: typing * 3,
+                badgeScale: baseline.badgeScale,
+                badgeGlowOpacity: baseline.badgeGlowOpacity,
+                musicPulse: (typing + 1) / 2,
+                musicCounterPulse: (1 - typing) / 2
+            )
+        }
+
+        guard isMusicPlaying else {
+            return isHungry ? hungryValues(seconds: seconds, isBlinking: isBlinking, baseline: baseline) : baseline
+        }
 
         // Playback state drives a playful rhythm; no audio capture is needed.
         let sway = sin(seconds * .pi * 2 / 1.2)

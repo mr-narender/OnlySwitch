@@ -1,4 +1,5 @@
 import AppKit
+import DesktopPetSkinKit
 import SwiftUI
 import ComposableArchitecture
 
@@ -20,20 +21,22 @@ public final class DesktopPetController: NSObject {
 
     private let onActivate: @MainActor () -> Void
     private let onClose: @MainActor () -> Void
-    private let panel: DesktopPetPanel
-    private let playbackStore: StoreOf<DesktopPetPlaybackFeature>
-    private let presentation = DesktopPetPresentation()
-    private var dragStartOrigin: CGPoint?
+    let panel: DesktopPetPanel
+    let playbackStore: StoreOf<DesktopPetPlaybackFeature>
+    let activityStore: StoreOf<DesktopPetAgentActivityFeature>
+    let needsStore: StoreOf<DesktopPetNeedsFeature>
+    let presentation = DesktopPetPresentation()
+    var dragStartOrigin: CGPoint?
     private var dragStartMouseLocation: CGPoint?
     private var restoredFrame = false
-    private var dock: Dock?
-    private var mouseMonitors: [Any] = []
-    private var pendingPhaseTask: Task<Void, Never>?
-    private var edgeSpring: DesktopPetSpring?
-    private var edgeDisplayLink: CADisplayLink?
+    var dock: Dock?
+    var mouseMonitors: [Any] = []
+    var pendingPhaseTask: Task<Void, Never>?
+    var edgeSpring: DesktopPetSpring?
+    var edgeDisplayLink: CADisplayLink?
 
     /// A pet pushed against a screen edge, which hides behind it until the mouse comes near that edge.
-    private struct Dock {
+    struct Dock {
         var edge: DesktopPetDockEdge
         var screenFrame: CGRect
         var restingFrame: CGRect
@@ -45,19 +48,31 @@ public final class DesktopPetController: NSObject {
     }
 
     /// The on-screen frame, even while the pet is hidden behind a screen edge.
-    private var restingFrame: CGRect {
+    var restingFrame: CGRect {
         dock?.restingFrame ?? panel.frame
     }
 
     public init(
         onActivate: @escaping @MainActor () -> Void,
         onClose: @escaping @MainActor () -> Void = {},
-        playbackClient: DesktopPetPlaybackClient = .init()
+        playbackClient: DesktopPetPlaybackClient = .init(),
+        activityClient: DesktopPetAgentActivityClient = .liveValue,
+        needsStorage: DesktopPetNeedsStorage = .liveValue
     ) {
         playbackStore = Store(initialState: DesktopPetPlaybackFeature.State()) {
             DesktopPetPlaybackFeature()
         } withDependencies: {
             $0.desktopPetPlayback = playbackClient
+        }
+        activityStore = Store(initialState: DesktopPetAgentActivityFeature.State()) {
+            DesktopPetAgentActivityFeature()
+        } withDependencies: {
+            $0.desktopPetAgentActivity = activityClient
+        }
+        needsStore = Store(initialState: DesktopPetNeedsFeature.State()) {
+            DesktopPetNeedsFeature()
+        } withDependencies: {
+            $0.desktopPetNeedsStorage = needsStorage
         }
         self.onActivate = onActivate
         self.onClose = onClose
@@ -80,27 +95,28 @@ public final class DesktopPetController: NSObject {
 
     isolated deinit {
         NotificationCenter.default.removeObserver(self)
+        activityStore.send(.stop)
+        needsStore.send(.stop)
         stopEdgeTracking()
     }
 
     public func show() {
         restoreFrameIfNeeded()
-        setRestingFrame(
-            DesktopPetLayout.resizedFramePreservingCenter(
-                restingFrame,
-                to: DesktopPetMetrics.canvasSize(for: pomodoroState, showsPlayback: playbackStore.source != nil)
-            ),
-            display: false
-        )
+        resizeContent(display: false)
         constrainPanelToVisibleScreen()
         saveFrame()
         presentation.isActive = true
+        presentation.isShown = true
         isVisible = true
+        activityStore.send(.start)
+        needsStore.send(.start)
         panel.orderFrontRegardless()
         updateEdgeTracking()
     }
 
     public func hide() {
+        activityStore.send(.stop)
+        needsStore.send(.stop)
         clearPlayback()
         stopEdgeTracking()
         if var dock, dock.phase != .revealed {
@@ -112,6 +128,7 @@ public final class DesktopPetController: NSObject {
         saveFrame()
         presentation.isActive = false
         presentation.isDragging = false
+        presentation.isShown = false
         isVisible = false
         panel.orderOut(nil)
     }
@@ -125,16 +142,26 @@ public final class DesktopPetController: NSObject {
         playbackStore.send(.clear)
     }
 
-    private func resizeForPlayback(_ showsPlayback: Bool) {
-        setRestingFrame(
-            DesktopPetLayout.resizedFramePreservingCenter(
-                restingFrame,
-                to: DesktopPetMetrics.canvasSize(for: pomodoroState, showsPlayback: showsPlayback)
-            ),
-            display: isVisible
+    private func resizeContent(display: Bool? = nil) {
+        let size = DesktopPetMetrics.canvasSize(
+            for: pomodoroState, showsPlayback: playbackStore.source != nil,
+            showsAgentStatus: activityStore.showsStatus
         )
+        var frame = DesktopPetLayout.resizedFramePreservingPet(restingFrame, to: size)
+        switch dock?.edge {
+        case .left: frame.origin.x = restingFrame.minX
+        case .right: frame.origin.x = restingFrame.maxX - size.width
+        case nil: break
+        }
+        setRestingFrame(frame, display: display ?? isVisible)
         constrainPanelToVisibleScreen()
         saveFrame()
+    }
+
+    /// Re-reads the hunger setting after Settings changes it.
+    public func reloadNeedsSettings() {
+        needsStore.send(.settingsChanged)
+        updateEdgeVisibility()
     }
 
     public func setControlPresented(_ isPresented: Bool) {
@@ -142,20 +169,18 @@ public final class DesktopPetController: NSObject {
         updateEdgeVisibility()
     }
 
+    /// Shows a custom skin, or the built-in pet for `nil`. A web view exists only while a skin is set.
+    public func setSkin(_ skin: DesktopPetSkin?) {
+        guard presentation.skin != skin else { return }
+        presentation.skin = skin
+    }
+
     public func setPomodoroState(_ state: DesktopPetPomodoroState?) {
         guard pomodoroState != state else { return }
 
         pomodoroState = state
         presentation.pomodoroState = state
-        setRestingFrame(
-            DesktopPetLayout.resizedFramePreservingCenter(
-                restingFrame,
-                to: DesktopPetMetrics.canvasSize(for: state, showsPlayback: playbackStore.source != nil)
-            ),
-            display: isVisible
-        )
-        constrainPanelToVisibleScreen()
-        saveFrame()
+        resizeContent()
     }
 
     func close() {
@@ -185,8 +210,17 @@ public final class DesktopPetController: NSObject {
                     self?.dragEnded(value)
                 },
                 playbackStore: playbackStore,
-                onPlaybackVisibilityChanged: { [weak self] isShown in
-                    self?.resizeForPlayback(isShown)
+                activityStore: activityStore,
+                needsStore: needsStore,
+                onPlaybackVisibilityChanged: { [weak self] _ in
+                    self?.resizeContent()
+                },
+                onActivityVisibilityChanged: { [weak self] in
+                    self?.resizeContent()
+                    self?.updateEdgeTracking()
+                },
+                onNeedsChanged: { [weak self] in
+                    self?.updateEdgeVisibility()
                 },
                 onClose: { [weak self] in
                     self?.close()
@@ -201,7 +235,7 @@ public final class DesktopPetController: NSObject {
 
         if panel.setFrameUsingName(Self.autosaveName) {
             panel.setFrame(
-                DesktopPetLayout.resizedFramePreservingCenter(
+                DesktopPetLayout.restoredFramePreservingPet(
                     panel.frame,
                     to: DesktopPetMetrics.canvasSize
                 ),
@@ -283,7 +317,7 @@ public final class DesktopPetController: NSObject {
         updateEdgeTracking()
     }
 
-    private func constrainPanelToVisibleScreen() {
+    func constrainPanelToVisibleScreen() {
         let screens = NSScreen.screens
         guard let index = DesktopPetLayout.bestScreenIndex(
             for: restingFrame,
@@ -312,173 +346,13 @@ public final class DesktopPetController: NSObject {
         setRestingFrame(frame, display: true)
     }
 
-    private func setRestingFrame(_ frame: CGRect, display: Bool) {
+    func setRestingFrame(_ frame: CGRect, display: Bool) {
         stopEdgeSpring()
         dock?.restingFrame = frame
         panel.setFrame(dock?.frame ?? frame, display: display)
     }
 
-    // MARK: - Edge hiding
-
-    private func updateEdgeTracking() {
-        guard isVisible, dock != nil else {
-            stopEdgeTracking()
-            return
-        }
-        startEdgeTracking()
-        updateEdgeVisibility()
-    }
-
-    private func startEdgeTracking() {
-        guard mouseMonitors.isEmpty else { return }
-
-        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .mouseMoved, handler: { [weak self] _ in
-            Task { @MainActor in
-                self?.updateEdgeVisibility()
-            }
-        }) {
-            mouseMonitors.append(monitor)
-        }
-        if let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved, handler: { [weak self] event in
-            Task { @MainActor in
-                self?.updateEdgeVisibility()
-            }
-            return event
-        }) {
-            mouseMonitors.append(monitor)
-        }
-    }
-
-    private func stopEdgeTracking() {
-        cancelPendingPhase()
-        stopEdgeSpring()
-        mouseMonitors.forEach(NSEvent.removeMonitor)
-        mouseMonitors = []
-    }
-
-    private func updateEdgeVisibility() {
-        guard isVisible, let dock, dragStartOrigin == nil else { return }
-
-        let wanted = presentation.isControlPresented
-            ? .revealed
-            : DesktopPetEdgeDocking.phase(
-                forMouseLocation: NSEvent.mouseLocation,
-                restingFrame: dock.restingFrame,
-                edge: dock.edge,
-                screenFrame: dock.screenFrame,
-                current: dock.phase
-            )
-
-        if wanted.visibility >= dock.phase.visibility {
-            cancelPendingPhase()
-            setEdgePhase(wanted)
-        } else if pendingPhaseTask == nil {
-            // Linger before retreating so a brief mouse slip does not make the pet flicker away.
-            let delay: Duration = dock.phase == .revealed ? .seconds(2) : .milliseconds(250)
-            pendingPhaseTask = Task { [weak self] in
-                try? await Task.sleep(for: delay)
-                guard !Task.isCancelled, let self else { return }
-                pendingPhaseTask = nil
-                retreatIfMouseIsAway()
-            }
-        }
-    }
-
-    /// Steps back toward hidden once the linger delay has passed, if the mouse is still away.
-    private func retreatIfMouseIsAway() {
-        guard isVisible, let dock, dragStartOrigin == nil, !presentation.isControlPresented else { return }
-        let wanted = DesktopPetEdgeDocking.phase(
-            forMouseLocation: NSEvent.mouseLocation,
-            restingFrame: dock.restingFrame,
-            edge: dock.edge,
-            screenFrame: dock.screenFrame,
-            current: dock.phase
-        )
-        if wanted.visibility < dock.phase.visibility {
-            setEdgePhase(wanted)
-        }
-    }
-
-    private func cancelPendingPhase() {
-        pendingPhaseTask?.cancel()
-        pendingPhaseTask = nil
-    }
-
-    private func setEdgePhase(_ phase: DesktopPetEdgePhase) {
-        guard var dock else { return }
-        let target = DesktopPetEdgeDocking.frame(
-            for: phase,
-            restingFrame: dock.restingFrame,
-            edge: dock.edge,
-            screenFrame: dock.screenFrame
-        )
-        let isMoving = edgeSpring != nil
-        guard dock.phase != phase || (!isMoving && panel.frame.origin != target.origin) else { return }
-
-        dock.phase = phase
-        self.dock = dock
-        if phase != .hidden {
-            presentation.isActive = true
-        }
-        presentation.edgeTilt = DesktopPetEdgeDocking.tilt(for: phase, edge: dock.edge)
-
-        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else {
-            stopEdgeSpring()
-            panel.setFrame(target, display: true)
-            presentation.isActive = phase != .hidden
-            return
-        }
-
-        let motion: DesktopPetSpringMotion = switch phase {
-        case .hidden: .hide(edge: dock.edge)
-        case .peeking: .peek(edge: dock.edge)
-        case .revealed: .pop(edge: dock.edge)
-        }
-        edgeSpring = DesktopPetSpring(position: panel.frame.origin, target: target.origin, motion: motion)
-        // Tie the link to the docked screen: a hidden panel is off every screen, so its own link would stall.
-        if edgeDisplayLink == nil,
-           let screen = NSScreen.screens.first(where: { $0.frame == dock.screenFrame }) ?? NSScreen.main {
-            let link = screen.displayLink(target: self, selector: #selector(stepEdgeSpring(_:)))
-            link.add(to: .main, forMode: .common)
-            edgeDisplayLink = link
-        }
-    }
-
-    @objc private func stepEdgeSpring(_ link: CADisplayLink) {
-        guard var spring = edgeSpring else {
-            stopEdgeSpring()
-            return
-        }
-        spring.step(by: min(link.targetTimestamp - link.timestamp, 1.0 / 30.0))
-        edgeSpring = spring
-        panel.setFrameOrigin(spring.position)
-
-        if spring.isSettled {
-            stopEdgeSpring()
-            if dock?.phase == .hidden {
-                presentation.isActive = false
-            }
-        }
-    }
-
-    private func stopEdgeSpring() {
-        edgeSpring = nil
-        edgeDisplayLink?.invalidate()
-        edgeDisplayLink = nil
-    }
-
-    private func saveFrame() {
+    func saveFrame() {
         panel.saveFrame(usingName: Self.autosaveName)
-    }
-}
-
-private extension DesktopPetEdgePhase {
-    /// Orders phases by how much of the pet is on screen.
-    var visibility: Int {
-        switch self {
-        case .hidden: 0
-        case .peeking: 1
-        case .revealed: 2
-        }
     }
 }

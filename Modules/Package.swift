@@ -82,6 +82,10 @@ let package = Package(
             targets: ["DesktopPet"]
         ),
         .library(
+            name: "DesktopPetSkinKit",
+            targets: ["DesktopPetSkinKit"]
+        ),
+        .library(
             name: "RemoteCore",
             targets: ["RemoteCore"]
         ),
@@ -163,7 +167,7 @@ let package = Package(
         .testTarget(
             name: "AppFeatureTests",
             dependencies: [
-                "AppFeature", "Aphrodite", "Defines", "DesktopPet", "DisplayBrightness", "Extensions",
+                "AppFeature", "Aphrodite", "Defines", "DesktopPet", "DesktopPetSkinKit", "DisplayBrightness", "Extensions",
                 "OnlyAgent", "OnlyControl", "OnlySwitchObjC", "OnlySwitchPersistence", "PrivilegedHelperCore",
                 "RemoteCore", "RemoteTransport", "Screenshots", "SoundMixerEQ", "Switches", "SystemMonitor",
                 "Tailscale", "Utilities",
@@ -220,7 +224,7 @@ let package = Package(
         .testTarget(name: "RadioBrowserTests", dependencies: ["RadioBrowser", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .target(name: "Scheduler", dependencies: ["Extensions", "RemoteCore", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
         .testTarget(name: "SchedulerTests", dependencies: ["Scheduler", "RemoteCore", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
-        .target(name: "WebBrowser", dependencies: ["Extensions", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")]),
+        .target(name: "WebBrowser", dependencies: ["Extensions", .product(name: "ComposableArchitecture", package: "swift-composable-architecture"), .product(name: "Dependencies", package: "swift-dependencies")], resources: [.process("Resources")]),
         .testTarget(name: "WebBrowserTests", dependencies: ["WebBrowser", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .target(name: "XcodeCleaner", dependencies: ["Extensions", .product(name: "Dependencies", package: "swift-dependencies"), .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
         .testTarget(name: "XcodeCleanerTests", dependencies: ["XcodeCleaner", .product(name: "ComposableArchitecture", package: "swift-composable-architecture")]),
@@ -283,6 +287,7 @@ let package = Package(
                 "Extensions",
                 "Defines",
                 "Design",
+                "DesktopPetSkinKit",
                 "Networking"
             ],
             resources: [
@@ -331,8 +336,12 @@ let package = Package(
             name: "DesktopPet",
             dependencies: [
                 "Design",
+                "DesktopPetSkinKit",
                 .product(name: "ComposableArchitecture", package: "swift-composable-architecture")
             ]
+        ),
+        .target(
+            name: "DesktopPetSkinKit"
         ),
         .target(
             name: "RemoteCore"
@@ -355,6 +364,7 @@ let package = Package(
                 "Switches",
                 "Authenticator",
                 "DesktopPet",
+                "DesktopPetSkinKit",
                 "OnlyControl",
                 "OnlyAgent",
                 "Aphrodite",

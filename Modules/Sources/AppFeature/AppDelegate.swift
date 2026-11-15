@@ -16,6 +16,7 @@ import Networking
 import FirebaseCore
 import Extensions
 import DesktopPet
+import DesktopPetSkinKit
 import UserNotifications
 import OnlySwitchPersistence
 import OSLog
@@ -42,6 +43,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
     var checkUpdatePresenter = GitHubPresenter.shared
     private var desktopPetController: DesktopPetController?
+    private var desktopPetSkinTask: Task<Void, Never>?
     private var desktopPetPomodoroRefreshTask: Task<Void, Never>?
     private let remoteAccessController = RemoteAccessController()
     private lazy var crashReportPrompt = CrashReportPrompt()
@@ -153,6 +155,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         )
         NotificationCenter.default.removeObserver(
             self,
+            name: .desktopPetNeedsSettingsChanged,
+            object: nil
+        )
+        NotificationCenter.default.removeObserver(
+            self,
+            name: .desktopPetSkinChanged,
+            object: nil
+        )
+        NotificationCenter.default.removeObserver(
+            self,
             name: .dockPreviewVisibilityChanged,
             object: nil
         )
@@ -172,9 +184,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
 
     private func setupDesktopPet() {
         let onlyControlWindow = OnlyControlWindow.shared
+        let clickPerformer = DesktopPetClickPerformer.app {
+            onlyControlWindow.toggle(monitorsOutsideClicks: true)
+        }
         let controller = DesktopPetController(
             onActivate: {
-                onlyControlWindow.toggle(monitorsOutsideClicks: true)
+                Task { @MainActor in await clickPerformer.perform() }
             },
             onClose: {
                 Preferences.shared.showDesktopPet = false
@@ -187,6 +202,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             controller?.setControlPresented(isPresented)
         }
         controller.setControlPresented(onlyControlWindow.isShowing)
+        applySelectedDesktopPetSkin()
 
         if Preferences.shared.showDesktopPet {
             controller.show()
@@ -197,6 +213,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
             self,
             selector: #selector(desktopPetVisibilityDidChange),
             name: .desktopPetVisibilityChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(desktopPetNeedsSettingsDidChange),
+            name: .desktopPetNeedsSettingsChanged,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applySelectedDesktopPetSkin),
+            name: .desktopPetSkinChanged,
             object: nil
         )
     }
@@ -217,6 +245,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         if let previewSwitch = SwitchManager.shared.getSwitch(of: .dockPreview) {
             previewSwitch.delegate?.shouldRefreshIfNeed(aSwitch: previewSwitch)
         }
+    }
+
+    /// Shows the selected custom skin, or the built-in pet when none is selected or it no longer exists.
+    @objc private func applySelectedDesktopPetSkin() {
+        let library = DesktopPetSkinLibraryClient.liveValue
+        // Only the latest change wins when several arrive while the library is loading.
+        desktopPetSkinTask?.cancel()
+        desktopPetSkinTask = Task { @MainActor [weak self] in
+            let skins = await library.load()
+            guard !Task.isCancelled else { return }
+            let selected = library.selectedID().flatMap { id in skins.first { $0.id == id } }
+            self?.desktopPetController?.setSkin(selected)
+        }
+    }
+
+    @objc private func desktopPetNeedsSettingsDidChange() {
+        desktopPetController?.reloadNeedsSettings()
     }
 
     @objc private func desktopPetVisibilityDidChange() {
