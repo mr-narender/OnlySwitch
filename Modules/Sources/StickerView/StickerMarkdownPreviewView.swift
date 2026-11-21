@@ -44,6 +44,7 @@ struct StickerMarkdownPreviewView: View {
                         )
                 }
                 .padding(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

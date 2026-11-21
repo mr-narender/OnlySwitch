@@ -1,0 +1,124 @@
+import Dependencies
+import DependenciesMacros
+import Foundation
+import RemoteCore
+
+struct RemoteConnectionSnapshot: Equatable, Sendable {
+    var selectedMacID: UUID?
+    var authenticatedMacID: UUID?
+    var authenticatedSessionID: UUID?
+
+    init(
+        selectedMacID: UUID? = nil,
+        authenticatedMacID: UUID? = nil,
+        authenticatedSessionID: UUID? = nil
+    ) {
+        self.selectedMacID = selectedMacID
+        self.authenticatedMacID = authenticatedMacID
+        self.authenticatedSessionID = authenticatedSessionID
+    }
+}
+
+struct RemoteActionInvocation: Equatable, Sendable {
+    let macID: UUID
+    let sessionID: UUID
+    let request: RemoteActionRequest
+}
+
+struct RemoteCodexUsageInvocation: Equatable, Sendable {
+    let macID: UUID
+    let sessionID: UUID
+    let request: RemoteCodexUsageRequest
+}
+
+struct RemoteClaudeUsageInvocation: Equatable, Sendable {
+    let macID: UUID
+    let sessionID: UUID
+    let request: RemoteClaudeUsageRequest
+}
+
+/// Addresses a screenshot request to the Mac whose library it came from; rejected if another Mac is selected.
+struct RemoteScreenshotInvocation<Request: Equatable & Sendable>: Equatable, Sendable {
+    let macID: UUID
+    let request: Request
+}
+
+/// Verified original (SHA-256 checked) in a temporary file the receiver owns, plus the manifest's content type.
+struct RemoteScreenshotImagePayload: Equatable, Sendable {
+    let contentType: String
+    let fileURL: URL
+}
+
+enum RemotePairAdoptionResult: Equatable, Sendable {
+    case authenticated
+    case connecting
+    case offline
+}
+
+struct PreparedPairing: Equatable, Sendable {
+    let transactionID: UUID
+    let mac: PairedMac
+    let catalog: RemoteCatalogCache
+}
+
+@DependencyClient
+struct RemoteConnectionClient: Sendable {
+    var discover: @Sendable () -> AsyncStream<DiscoveryEvent> = { AsyncStream { $0.finish() } }
+    var restartDiscovery: @Sendable () async -> Void = { }
+    var preparePairing: @Sendable (DiscoveredMac, String, String) async throws -> PreparedPairing = { _, _, _ in
+        throw RemoteDependencyError.unimplemented
+    }
+    var finalizePairing: @Sendable (UUID) async throws -> PairedMac = { _ in throw RemoteDependencyError.unimplemented }
+    var abortPairing: @Sendable (UUID?) async -> Void = { _ in }
+    var select: @Sendable (PairedMac?) async -> Void = { _ in }
+    var events: @Sendable () -> AsyncStream<RemoteConnectionEvent> = { AsyncStream { $0.finish() } }
+    var snapshot: @Sendable () async -> RemoteConnectionSnapshot = { .init() }
+    var adoptPairedMac: @Sendable (PairedMac) async -> RemotePairAdoptionResult = { _ in .offline }
+    var forgetMac: @Sendable (UUID) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var subscribe: @Sendable (Set<RemoteControlID>) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var send: @Sendable (RemoteActionInvocation) async throws -> RemoteActionResult = { _ in throw RemoteDependencyError.unimplemented }
+    var fetchCodexUsage: @Sendable (RemoteCodexUsageInvocation) async throws -> RemoteCodexUsageResult = { _ in throw RemoteDependencyError.unimplemented }
+    var fetchClaudeUsage: @Sendable (RemoteClaudeUsageInvocation) async throws -> RemoteClaudeUsageResult = { _ in throw RemoteDependencyError.unimplemented }
+    var sendSoundMixer: @Sendable (RemoteSoundMixerCommand) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var setSystemMonitorStreaming: @Sendable (Bool) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var setSoundMixerStreaming: @Sendable (Bool) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var setBrightnessStreaming: @Sendable (Bool) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var sendBrightness: @Sendable (RemoteBrightnessCommand) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var setScreenshotsStreaming: @Sendable (Bool) async throws -> Void = { _ in throw RemoteDependencyError.unimplemented }
+    var fetchScreenshotThumbnails: @Sendable (RemoteScreenshotInvocation<RemoteScreenshotThumbnailsRequest>) async throws -> RemoteScreenshotThumbnailsResult = { _ in
+        throw RemoteDependencyError.unimplemented
+    }
+    /// Verified original bytes (SHA-256 checked) plus the manifest's content type.
+    var fetchScreenshotImage: @Sendable (RemoteScreenshotInvocation<RemoteScreenshotImageRequest>) async throws -> RemoteScreenshotImagePayload = { _ in
+        throw RemoteDependencyError.unimplemented
+    }
+    var deleteScreenshots: @Sendable (RemoteScreenshotInvocation<RemoteScreenshotDeleteRequest>) async throws -> RemoteScreenshotDeleteResult = { _ in
+        throw RemoteDependencyError.unimplemented
+    }
+    var setForegrounded: @Sendable (Bool) async -> Void = { _ in }
+    /// Runs an original download (fetch and cache write). If the app is backgrounded meanwhile, the
+    /// session stays open with background execution time until every such transfer has finished,
+    /// or until the grace period ends; then it closes as usual. Foregrounding cancels the hold.
+    var withBackgroundTransferHold: @Sendable (
+        _ transfer: @escaping @Sendable () async throws -> URL
+    ) async throws -> URL = { try await $0() }
+}
+
+extension RemoteConnectionClient: DependencyKey {
+    static var liveValue: Self { .live }
+    static var testValue: Self {
+        var value = Self()
+        value.abortPairing = { _ in }
+        value.events = { AsyncStream { $0.finish() } }
+        value.snapshot = { .init() }
+        value.adoptPairedMac = { _ in .offline }
+        return value
+    }
+}
+
+extension DependencyValues {
+    var remoteConnection: RemoteConnectionClient {
+        get { self[RemoteConnectionClient.self] }
+        set { self[RemoteConnectionClient.self] = newValue }
+    }
+}

@@ -1,28 +1,14 @@
 import CoreGraphics
 
 public enum DesktopPetLayout {
+    /// Centered, so a new pet does not start against a screen edge and immediately tuck away.
     public static func defaultFrame(
         size: CGSize,
-        visibleFrame: CGRect,
-        inset: CGFloat = 28
-    ) -> CGRect {
-        defaultFrame(
-            size: size,
-            visibleFrame: visibleFrame,
-            horizontalInset: inset,
-            verticalInset: inset
-        )
-    }
-
-    public static func defaultFrame(
-        size: CGSize,
-        visibleFrame: CGRect,
-        horizontalInset: CGFloat,
-        verticalInset: CGFloat
+        visibleFrame: CGRect
     ) -> CGRect {
         CGRect(
-            x: visibleFrame.minX + horizontalInset,
-            y: visibleFrame.minY + verticalInset,
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2,
             width: size.width,
             height: size.height
         )
@@ -38,6 +24,20 @@ public enum DesktopPetLayout {
             width: size.width,
             height: size.height
         )
+    }
+
+    /// Status expands to the pet's left; keeping the right edge keeps its on-screen anchor.
+    public static func resizedFramePreservingPet(_ frame: CGRect, to size: CGSize) -> CGRect {
+        var result = resizedFramePreservingCenter(frame, to: size)
+        result.origin.x = frame.maxX - size.width
+        return result
+    }
+
+    public static func restoredFramePreservingPet(_ frame: CGRect, to size: CGSize) -> CGRect {
+        let horizontalStatusWidth = DesktopPetMetrics.canvasSize(for: nil, showsAgentStatus: true).width
+        return frame.width >= horizontalStatusWidth
+            ? resizedFramePreservingPet(frame, to: size)
+            : resizedFramePreservingCenter(frame, to: size)
     }
 
     public static func constrainedFrame(_ frame: CGRect, to visibleFrame: CGRect) -> CGRect {
