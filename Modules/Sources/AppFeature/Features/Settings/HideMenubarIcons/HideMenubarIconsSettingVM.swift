@@ -1,0 +1,64 @@
+//
+//  HideMenubarIconsSettingVM.swift
+//  OnlySwitch
+//
+//  Created by Jacklandrin on 2022/6/8.
+//
+
+import Foundation
+import SwiftUI
+import Combine
+
+@MainActor
+class HideMenubarIconsSettingVM:ObservableObject {
+    private var cancellables = Set<AnyCancellable>()
+    private var preferencesPublisher = PreferencesObserver.shared
+    private let operatingSystemMajorVersion: @Sendable () -> Int
+    @Published private var preferences = PreferencesObserver.shared.preferences
+    var durationSet = [0, 5, 10, 15, 30, 60]
+    var showsNativeVisibilityLimitation: Bool {
+        operatingSystemMajorVersion() >= 27
+    }
+
+    var isEnable:Bool {
+        get {
+            return preferences.menubarCollaspable
+        }
+        set {
+            // Preferences is a class, so changing its property doesn't fire @Published.
+            objectWillChange.send()
+            preferences.menubarCollaspable = newValue
+        }
+    }
+    
+    var automaticallyHideTime:Int {
+        get {
+            return preferences.autoCollapseMenubarTime
+        }
+        set {
+            // Preferences is a class, so changing its property doesn't fire @Published.
+            objectWillChange.send()
+            preferences.autoCollapseMenubarTime = newValue
+        }
+    }
+    
+    
+    init(operatingSystemMajorVersion: @escaping @Sendable () -> Int = {
+        ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+    }) {
+        self.operatingSystemMajorVersion = operatingSystemMajorVersion
+        preferencesPublisher.$preferences.sink{_ in
+            self.objectWillChange.send()
+        }.store(in: &cancellables)
+    }
+    
+    func converTimeDescription(duration:Int) -> String {
+        if duration == 0 {
+            return "never".localized()
+        } else if duration == 60 {
+            return "1 minute".localized()
+        } else {
+            return "\(duration) " + "seconds".localized()
+        }
+    }
+}
